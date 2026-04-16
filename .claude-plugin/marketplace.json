@@ -12,6 +12,12 @@
       "description": "Deploy a Cozystack package to a dev cluster via make + cozyhr — handles fresh install and dev-loop iteration with ExternalArtifact support",
       "source": "./skills/cozy-deploy",
       "category": "infrastructure"
+    },
+    {
+      "name": "cozy-external-app",
+      "description": "Scaffold a new Cozystack external app package — generates chart skeleton, CozystackResourceDefinition, and handles dependency integration (e.g. Immich → Postgres) via managed CNPG clusters or external secret references",
+      "source": "./skills/cozy-external-app",
+      "category": "infrastructure"
     }
   ]
 }
