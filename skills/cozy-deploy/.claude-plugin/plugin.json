@@ -1,0 +1,9 @@
+{
+  "name": "cozy-deploy",
+  "version": "1.0.0",
+  "description": "Deploy a Cozystack package to a dev cluster via make + cozyhr — handles fresh install and dev-loop iteration with ExternalArtifact support",
+  "author": {
+    "name": "Cozystack",
+    "url": "https://github.com/cozystack"
+  }
+}
