@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "cozystack-claude-plugins",
+  "description": "Claude Code plugins for the Cozystack ecosystem — deployment skills, development workflows, and infrastructure tools",
+  "owner": {
+    "name": "Cozystack",
+    "url": "https://github.com/cozystack"
+  },
+  "plugins": [
+    {
+      "name": "cozy-deploy",
+      "description": "Deploy a Cozystack package to a dev cluster via make + cozyhr — handles fresh install and dev-loop iteration with ExternalArtifact support",
+      "source": "./skills/cozy-deploy",
+      "category": "infrastructure"
+    }
+  ]
+}
