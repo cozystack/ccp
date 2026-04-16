@@ -169,7 +169,7 @@ Show the output to the user, then stop. Do not auto-rollback.
 Print the actual image running on each pod — this is how you confirm the custom build landed (especially important in Mode B, where `helm` history will lie about what's deployed):
 
 ```bash
-kubectl --context $CONTEXT --namespace $NAMESPACE get pods -l app.kubernetes.io/instance=$RELEASE \
+kubectl --context $CONTEXT --namespace $NAMESPACE get pods -l app=<app-label> \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}'
 ```
 
@@ -188,7 +188,7 @@ Otherwise, `AskUserQuestion`: "Resume the HelmRelease now? Flux will reconcile t
 - If yes — run the resume command, then watch the pods for a minute to confirm Flux pulls back control:
   ```bash
   cozyhr --context $CONTEXT resume --namespace $NAMESPACE $RELEASE
-  kubectl --context $CONTEXT --namespace $NAMESPACE get pods -l app.kubernetes.io/instance=$RELEASE --watch
+  kubectl --context $CONTEXT --namespace $NAMESPACE get pods -l app=<app-label> --watch
   ```
   (Let the watcher exit on Ctrl-C once upstream digest is visible.)
 - If no — print the same reminder as the `--no-resume` path.
