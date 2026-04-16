@@ -37,7 +37,7 @@ Bail early if any check fails — do not try partial workflows.
 3. **Package directory exists**: resolve `PKG_DIR` in priority order: `packages/system/<pkg>` then `packages/apps/<pkg>` then `packages/extra/<pkg>`. If none exists, list the available packages from `packages/*/` and ask the user.
 4. **Extract `NAME` and `NAMESPACE`** from `$PKG_DIR/Makefile` (look for `NAME=` and `NAMESPACE=` lines near the top). Override with the flags if given.
 5. **Container / Deployment names** — grep `$PKG_DIR/templates/*.yaml` for Deployment names and per-container `- name:` values under `containers:`. Needed later for Mode B. If the package has no Deployment template (some chart-only packages), note it and skip Mode B steps.
-6. **Arm64 + amd64 cross-build prerequisites** (only matters if target cluster nodes are amd64 — check with `kubectl --context <ctx> get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}'` later; if `amd64` and local `uname -m` is `arm64`):
+6. **Arm64 + amd64 cross-build prerequisites** (only matters if target cluster nodes are amd64 — check with `kubectl --context $CONTEXT get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}'` later; if `amd64` and local `uname -m` is `arm64`):
    - `docker buildx ls` — look for a builder advertising both `linux/amd64` and `linux/arm64`. If the default builder only lists one, the user needs a `docker-container` builder.
    - `colima status` — if running but without Rosetta, builds of Go-based images will segfault inside QEMU emulation. Check `~/.colima/default/colima.yaml` for `rosetta: true`.
    - If any of the above is missing, print the exact remediation commands and **stop**:
@@ -75,8 +75,8 @@ REGISTRY="ttl.sh/$UUID"
 
 Full image path becomes `ttl.sh/<uuid>/<pkg>:<tag>@sha256:<digest>`. Emit a note:
 
-- "Image pushed to `ttl.sh/<uuid>/…` — 24-hour TTL, name is not discoverable."
-- "To redeploy the exact same build later, pass `--registry=ttl.sh/<uuid>` — otherwise a new UUID will be generated."
+- "Image pushed to `ttl.sh/$UUID/…` — 24-hour TTL, name is not discoverable."
+- "To redeploy the exact same build later, pass `--registry=ttl.sh/$UUID` — otherwise a new UUID will be generated."
 
 ## Phase 5 — Build (unless `--skip-build`)
 
@@ -84,7 +84,7 @@ Run from the repo root:
 
 ```bash
 REGISTRY=$REGISTRY TAG=$TAG PLATFORM=linux/amd64 BUILDER=multi PUSH=1 \
-  make --directory packages/<section>/<pkg> image
+  make --directory $PKG_DIR image
 ```
 
 Notes:
@@ -93,7 +93,7 @@ Notes:
 - `BUILDER=multi` matches the name from Phase 2 — if the user already had a builder with a different name, use that.
 - `make image` will re-write the package's `values.yaml` in place (via `yq -i`) to inject the resolved `<image>@sha256:<digest>`. Verify the diff:
   ```bash
-  git diff --quiet packages/<section>/<pkg>/values.yaml || echo "values.yaml updated"
+  git diff --quiet $PKG_DIR/values.yaml || echo "values.yaml updated"
   ```
   If unchanged, something went wrong (e.g., image build silently succeeded but push failed — check the `make` output for `pushing manifest` lines).
 
@@ -119,7 +119,7 @@ State which mode was selected in your running commentary.
 ### Mode A — Fresh install
 
 ```bash
-make --directory packages/<section>/<pkg> apply NAMESPACE=$NAMESPACE NAME=$RELEASE
+make --directory $PKG_DIR apply NAMESPACE=$NAMESPACE NAME=$RELEASE
 ```
 
 `cozyhr apply` will create the release with the local chart + local values.
@@ -142,7 +142,7 @@ The chartRef ignores local values, so don't try `cozyhr apply` with the hope it 
 ### Mode C — Dev-loop with inline chart
 
 ```bash
-make --directory packages/<section>/<pkg> apply NAMESPACE=$NAMESPACE NAME=$RELEASE
+make --directory $PKG_DIR apply NAMESPACE=$NAMESPACE NAME=$RELEASE
 ```
 
 `cozyhr apply` already handles the suspend.
@@ -169,7 +169,7 @@ Show the output to the user, then stop. Do not auto-rollback.
 Print the actual image running on each pod — this is how you confirm the custom build landed (especially important in Mode B, where `helm` history will lie about what's deployed):
 
 ```bash
-kubectl --context $CONTEXT --namespace $NAMESPACE get pods -l app=<app-label> \
+kubectl --context $CONTEXT --namespace $NAMESPACE get pods -l app.kubernetes.io/instance=$RELEASE \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\n"}{end}'
 ```
 
@@ -188,7 +188,7 @@ Otherwise, `AskUserQuestion`: "Resume the HelmRelease now? Flux will reconcile t
 - If yes — run the resume command, then watch the pods for a minute to confirm Flux pulls back control:
   ```bash
   cozyhr --context $CONTEXT resume --namespace $NAMESPACE $RELEASE
-  kubectl --context $CONTEXT --namespace $NAMESPACE get pods -l app=<app-label> --watch
+  kubectl --context $CONTEXT --namespace $NAMESPACE get pods -l app.kubernetes.io/instance=$RELEASE --watch
   ```
   (Let the watcher exit on Ctrl-C once upstream digest is visible.)
 - If no — print the same reminder as the `--no-resume` path.
@@ -198,7 +198,7 @@ Otherwise, `AskUserQuestion`: "Resume the HelmRelease now? Flux will reconcile t
 Unless `--keep-values` was passed, revert the values.yaml changes so a subsequent `git commit -a` does not accidentally bake the ttl.sh digest into the PR:
 
 ```bash
-git --git-dir=<repo>/.git --work-tree=<repo> checkout -- packages/<section>/<pkg>/values.yaml
+git checkout -- $PKG_DIR/values.yaml
 ```
 
 This does **not** undo anything on the cluster.
@@ -207,7 +207,7 @@ This does **not** undo anything on the cluster.
 
 Emit a compact report:
 
-- Package: `packages/<section>/<pkg>`
+- Package: `$PKG_DIR`
 - Source commit: `git rev-parse --short HEAD`
 - Image: `$FULL_IMAGE_WITH_DIGEST`
 - Registry: `$REGISTRY` (flag UUID-based ttl.sh paths as "private, 24h TTL")
@@ -231,6 +231,6 @@ Read these files on demand when reasoning about the workflow:
 
 - `hack/common-envs.mk` — `REGISTRY`, `TAG`, `PLATFORM`, `BUILDER`, `BUILDX_ARGS`, `settag` macro
 - `hack/package.mk` — targets `show`, `apply`, `diff`, `suspend`, `resume`, `delete`
-- `packages/<section>/<pkg>/Makefile` — per-package `image` target and `NAME`/`NAMESPACE`
-- `packages/<section>/<pkg>/values.yaml` — image field(s) rewritten by `make image`
-- `packages/<section>/<pkg>/templates/*.yaml` — Deployment and container names for `kubectl set image`
+- `$PKG_DIR/Makefile` — per-package `image` target and `NAME`/`NAMESPACE`
+- `$PKG_DIR/values.yaml` — image field(s) rewritten by `make image`
+- `$PKG_DIR/templates/*.yaml` — Deployment and container names for `kubectl set image`
