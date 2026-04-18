@@ -262,6 +262,31 @@ Create `packages/apps/$APP_NAME/templates/` with the following files.
 
 Generate the primary workload template. If the user chose "upstream Helm chart", wrap it in a Flux HelmRelease (like harbor does). If "custom templates", create a Deployment or StatefulSet directly.
 
+**For a Flux HelmRelease wrapper example (upstream chart case):**
+
+```yaml
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: $UPSTREAM_CHART_NAME
+      version: $UPSTREAM_CHART_VERSION
+      sourceRef:
+        kind: HelmRepository
+        name: $UPSTREAM_REPO_NAME
+        namespace: cozy-public
+  values:
+    # Map .Values.* to the upstream chart's value schema here.
+    # Pull credentials from the CNPG secret (Pattern A) or from
+    # .Values.postgres.* (Pattern B) as established in Phase 4.
+```
+
+The referenced `HelmRepository` resource must exist in the cluster. If it does not, register it in Phase 8 alongside the other platform resources.
+
 **For a direct Deployment example:**
 
 ```yaml
