@@ -895,15 +895,41 @@ Print a report:
 
 ## Dependency catalog
 
-The skill supports three integration patterns (see Phase 4):
+Contracts are **resolved at runtime** in Phase 4 Step 2. This appendix is a reference, not a pre-baked list of supported deps — two worked examples below (postgres, redis) show what a correctly resolved `$DEP_CONTRACT` looks like so the assistant can verify its own parsing and the user can eyeball a familiar case.
 
-- **Pattern C** — app chart creates a cozystack-level sibling CR (`Postgres`, `Redis`, …). Default for external apps.
-- **Pattern A** — app chart creates the operator CR directly (CNPG `Cluster`, Spotahome `RedisFailover`). System-style; rarely appropriate for external apps.
-- **Pattern B** — user provides a pre-existing service via values. Unchanged from plain Helm.
+For any dependency the skill has not seen before, run Phase 4 Step 2 against cozystack itself. There is no need — and no place — to keep a hand-maintained enumeration of every supported dep; cozystack's `packages/system/<dep>-rd/cozyrds/<dep>.yaml` is the single source of truth.
 
-Pattern C entries below capture the naming contract that cozystack controllers commit to: the downstream HelmRelease name, the Secret the downstream chart creates, and the Services it exposes. These values are pulled directly from `packages/system/<dep>-rd/cozyrds/<dep>.yaml` — authoritative per cozystack version. If a cozystack upgrade changes a prefix or resourceName pattern, the catalog here must be re-verified.
+### Interpreting a resolved contract
 
-Pattern A entries record the operator-CR shape for cases where Pattern C is not available or not desired.
+An ApplicationDefinition document has this structure (minimal view — see `cozystack.io_applicationdefinitions.yaml` CRD for the full schema):
+
+```yaml
+apiVersion: cozystack.io/v1alpha1
+kind: ApplicationDefinition
+metadata:
+  name: <dep>
+spec:
+  application:
+    kind: <KindName>            # → $DEP_CONTRACT.kind
+    plural: <plural>            # → $DEP_CONTRACT.plural
+    openAPISchema: |            # → $DEP_CONTRACT.specSchema (drives Phase 4 Step 4)
+      { ... JSON ... }
+  release:
+    prefix: <prefix>-            # → $DEP_CONTRACT.prefix
+    chartRef: ...
+  secrets:
+    include:
+      - resourceNames:
+          - <prefix>{{ .name }}-<suffix>    # → $DEP_CONTRACT.secretTemplates
+  services:
+    include:
+      - resourceNames:
+          - <prefix>{{ .name }}-<suffix>    # → $DEP_CONTRACT.serviceTemplates
+```
+
+`{{ .name }}` in the resourceNames is the **name of the cozystack-level CR the app chart emits**, not the app's own `.Release.Name`. Concretely: when the app chart emits `${DEP_CONTRACT.kind}/{{ .Release.Name }}-db`, substitute `{{ .name }} = <app-release-name>-db` in every template.
+
+The next two sections show the result of the resolution procedure for postgres and redis — verified against upstream cozystack `main` at the time this skill was written. When a cozystack release changes these contracts, the sections below go stale; trust runtime resolution, not this appendix.
 
 ### Pattern C — postgres (cozystack `Postgres`)
 
@@ -999,17 +1025,6 @@ valuesFrom:
     valuesKey: password
     targetPath: app.config.redis.password
 ```
-
-### Pattern C — other dependencies
-
-For `MariaDB`, `MongoDB`, `Kafka`, `ClickHouse`, `RabbitMQ`, `FoundationDB`, `Qdrant`, `OpenSearch`, `NATS`, `Openbao` — read the corresponding `packages/system/<dep>-rd/cozyrds/<dep>.yaml` and extract:
-
-- `spec.application.kind` — sibling CR kind.
-- `spec.release.prefix` — HelmRelease name prefix.
-- `spec.secrets.include.resourceNames` — exact Secret naming template (often `<prefix>{{ .name }}-credentials` or similar).
-- `spec.services.include.resourceNames` — Service naming templates.
-
-Do not extrapolate from the postgres/redis entries above. Each ApplicationDefinition declares its own naming contract.
 
 ### Pattern A — research procedure (for dependencies not in the Pattern A catalog below)
 
