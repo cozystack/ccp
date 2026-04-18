@@ -636,6 +636,73 @@ Print a report:
   4. Commit and push — Flux picks up changes via the GitRepository defined in `init.yaml` (default interval: 1m)
   5. Verify in cluster: `kubectl get $APP_PLURAL.$APP_NAME.apps.cozystack.io --all-namespaces`
 
+## Dependency catalog
+
+For any Pattern A dependency, you MUST know three things before writing a creation template or an env mapping: (1) the exact CR `apiVersion`/`kind`, (2) which secret is produced, by whom, and with which keys, (3) how the app consumes those secrets. Never guess. The entries below are verified against the cozystack monorepo (`git.com/cozystack/cozystack`). For any dependency not listed here, research a reference implementation before writing templates.
+
+### Research procedure (for dependencies not in the catalog)
+
+1. Locate a reference in the cozystack monorepo:
+
+   ```bash
+   grep -rlE "kind: (Cluster|RedisFailover|PerconaServerMongoDB|Kafka|ClickHouseInstallation|NATS)" \
+     $COZYSTACK_REPO/packages/{apps,system}/*/templates/
+   ```
+
+2. Read the CR template and the consumer template (typically the app's main workload). Extract:
+   - CR `apiVersion` and `kind`.
+   - Whether the operator auto-creates a credentials Secret, or the chart must create one itself.
+   - Exact Secret name template and key names.
+   - Whether the app wires credentials via `env + secretKeyRef`, a mounted volume, or a config file.
+3. Record the findings before proceeding to Phase 7. If research does not yield a verified answer, stop and ask the user — do not invent CR shapes or secret key names.
+
+### postgres — CloudNativePG `Cluster`
+
+| Field | Value |
+| --- | --- |
+| Operator | CloudNativePG (`cnpg.io`) — provided by `packages/system/cnpg-operator` |
+| CR | `postgresql.cnpg.io/v1` → `Cluster` |
+| Reference template | `cozystack/packages/system/harbor/templates/database.yaml` |
+| Reference consumer | `cozystack/packages/system/keycloak/templates/sts.yaml:142-168` |
+| Output Secret | Auto-created by the operator. If cluster is named `<release>-db`, the Secret is `<release>-db-app`. |
+| Output Secret keys | `host`, `port`, `username`, `password`, `dbname`, `uri`, `jdbc-uri` |
+| Superuser Secret | `<release>-db-superuser` (same keys + `superuser`) |
+| Services | `<release>-db-rw` (primary), `<release>-db-r` (read replicas), `<release>-db-ro` (read-only) |
+| App wiring | env via `secretKeyRef` to the auto-created Secret |
+
+### redis — Spotahome `RedisFailover`
+
+| Field | Value |
+| --- | --- |
+| Operator | Spotahome Redis Operator (`databases.spotahome.com`) — provided by `packages/system/redis-operator` |
+| CR | `databases.spotahome.com/v1` → `RedisFailover` |
+| Reference template | `cozystack/packages/system/harbor/templates/redis.yaml` |
+| Output Secret | **Not auto-created** — the chart itself creates a Secret alongside the CR (naming is chart-choice, commonly `<release>-redis-auth` with key `password`). |
+| CR ↔ Secret wiring | `spec.auth.secretPath: <secret-name>` — the operator reads the Secret by that name. |
+| App wiring | The same Secret is mounted or read via env by the app. The chart generates the password (e.g., from `.Values.redis.password` or a randomly generated one) and stores it in the Secret. |
+
+Unlike CNPG, the Spotahome operator does NOT emit connection details. The chart is responsible for password generation and for wiring the same Secret into both the operator (`auth.secretPath`) and the consuming app.
+
+### mongodb — Percona `PerconaServerMongoDB`
+
+| Field | Value |
+| --- | --- |
+| Operator | Percona Server for MongoDB (`psmdb.percona.com`) — provided by `packages/system/psmdb-operator` |
+| CR | `psmdb.percona.com/v1` → `PerconaServerMongoDB` |
+| Reference template | `cozystack/packages/apps/mongodb/templates/mongodb.yaml` |
+| Seed Secret | **Chart-created**, referenced via `spec.secrets.users` — the operator reads this for initial user/password seeding. |
+| App wiring | Depends on the app — typically a `DATABASE_URL` assembled from the Secret. Verify against the specific app's expected env before wiring. |
+
+### kafka — Strimzi `Kafka`
+
+| Field | Value |
+| --- | --- |
+| Operator | Strimzi (`kafka.strimzi.io`) |
+| CR | `kafka.strimzi.io/v1beta2` → `Kafka` (plus `KafkaUser` for SCRAM/TLS) |
+| Reference template | `cozystack/packages/apps/kafka/templates/kafka.yaml` |
+| Output Secrets | Brokers expose services. Client credentials are issued per `KafkaUser` CR — Strimzi creates a Secret named `<KafkaUser-name>` with `password` (SCRAM) and/or `user.crt`/`user.key` (TLS). |
+| App wiring | SCRAM-SHA-512 via env, or TLS via mounted volume. Consult the KafkaUser status to discover the actual Secret layout. |
+
 ## Guardrails
 
 - **Never** commit or push on behalf of the user. This is a generate-only skill.
