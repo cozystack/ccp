@@ -345,7 +345,45 @@ size: 10Gi
 storageClass: ""
 ```
 
-**For Pattern A (managed postgres) dependencies**, add:
+**For Pattern C (sibling cozystack ApplicationDefinition) dependencies** — the default for external apps — add one section per dep. The fields must match what Phase 7 templates read. Example for postgres + redis:
+
+```yaml
+##
+## @section Database configuration
+##
+
+## @typedef {struct} Database - PostgreSQL configuration (managed via the cozystack `Postgres` sibling CR).
+## @field {quantity} size - Persistent Volume size for database storage.
+## @field {int} replicas - Number of database instances.
+## @field {string} user - Database user to create.
+## @field {string} name - Database name to create.
+## @field {string} [password] - Optional password. When empty, the cozystack postgres chart generates and preserves one via lookup.
+
+## @param {Database} database - PostgreSQL configuration.
+database:
+  size: 10Gi
+  replicas: 2
+  user: app
+  name: app
+  password: ""
+
+##
+## @section Redis configuration
+##
+
+## @typedef {struct} Redis - Redis configuration (managed via the cozystack `Redis` sibling CR).
+## @field {quantity} size - Persistent Volume size for redis storage.
+## @field {int} replicas - Number of redis replicas.
+
+## @param {Redis} redis - Redis configuration.
+redis:
+  size: 1Gi
+  replicas: 2
+```
+
+Add or remove sections to match the actual dependency set resolved in Phase 4. Field names must match `.Values.<dep>.*` references emitted by Phase 7 templates — re-check after editing.
+
+**For Pattern A (in-chart operator CR) dependencies**, add:
 
 ```yaml
 ##
