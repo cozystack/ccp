@@ -785,9 +785,123 @@ Print a report:
 
 ## Dependency catalog
 
-For any Pattern A dependency, you MUST know three things before writing a creation template or an env mapping: (1) the exact CR `apiVersion`/`kind`, (2) which secret is produced, by whom, and with which keys, (3) how the app consumes those secrets. Never guess. The entries below are verified against the cozystack monorepo (`git.com/cozystack/cozystack`). For any dependency not listed here, research a reference implementation before writing templates.
+The skill supports three integration patterns (see Phase 4):
 
-### Research procedure (for dependencies not in the catalog)
+- **Pattern C** — app chart creates a cozystack-level sibling CR (`Postgres`, `Redis`, …). Default for external apps.
+- **Pattern A** — app chart creates the operator CR directly (CNPG `Cluster`, Spotahome `RedisFailover`). System-style; rarely appropriate for external apps.
+- **Pattern B** — user provides a pre-existing service via values. Unchanged from plain Helm.
+
+Pattern C entries below capture the naming contract that cozystack controllers commit to: the downstream HelmRelease name, the Secret the downstream chart creates, and the Services it exposes. These values are pulled directly from `packages/system/<dep>-rd/cozyrds/<dep>.yaml` — authoritative per cozystack version. If a cozystack upgrade changes a prefix or resourceName pattern, the catalog here must be re-verified.
+
+Pattern A entries record the operator-CR shape for cases where Pattern C is not available or not desired.
+
+### Pattern C — postgres (cozystack `Postgres`)
+
+| Field | Value |
+| --- | --- |
+| Sibling CR | `apps.cozystack.io/v1alpha1` → `Postgres` |
+| Source of truth | `cozystack/packages/system/postgres-rd/cozyrds/postgres.yaml` |
+| Downstream HelmRelease | `postgres-{{ .name }}` (prefix `postgres-` from the ApplicationDefinition) |
+| Credentials Secret | `postgres-{{ .name }}-credentials` — keys are the usernames configured in `spec.users.<u>.password`. The key's value is the plaintext password. |
+| Services | `postgres-{{ .name }}-rw` (primary), `-r` (read replicas), `-ro` (read-only), `-external-write` (LoadBalancer when `spec.external: true`) |
+| Port | `5432` |
+| Sibling CR spec essentials | `size`, `replicas`, `users` (map `<username>: {password: ...}`), `databases` (map `<dbname>: {roles: {admin: [...usernames]}}`), `external`, `storageClass` |
+
+Example Pattern C CR (rendered from the app chart's `templates/postgres.yaml`):
+
+```yaml
+apiVersion: apps.cozystack.io/v1alpha1
+kind: Postgres
+metadata:
+  name: {{ .Release.Name }}-db
+  namespace: {{ .Release.Namespace }}
+spec:
+  size: {{ .Values.database.size }}
+  replicas: {{ .Values.database.replicas }}
+  external: false
+  users:
+    {{ .Values.database.user }}:
+      password: {{ .Values.database.password | default (randAlphaNum 32) | quote }}
+  databases:
+    {{ .Values.database.name }}:
+      roles:
+        admin:
+          - {{ .Values.database.user }}
+```
+
+Wiring in the main workload HelmRelease:
+
+```yaml
+values:
+  app:
+    config:
+      database:
+        host: postgres-{{ .Release.Name }}-db-rw
+        port: 5432
+        name: {{ .Values.database.name }}
+        user: {{ .Values.database.user }}
+valuesFrom:
+  - kind: Secret
+    name: postgres-{{ .Release.Name }}-db-credentials
+    valuesKey: {{ .Values.database.user }}
+    targetPath: app.config.database.password
+```
+
+### Pattern C — redis (cozystack `Redis`)
+
+| Field | Value |
+| --- | --- |
+| Sibling CR | `apps.cozystack.io/v1alpha1` → `Redis` |
+| Source of truth | `cozystack/packages/system/redis-rd/cozyrds/redis.yaml` |
+| Downstream HelmRelease | `redis-{{ .name }}` (prefix `redis-`) |
+| Credentials Secret | `redis-{{ .name }}-auth` — key `password`. Present only when `spec.authEnabled: true` (default). |
+| Services | `rfs-redis-{{ .name }}` (sentinel :26379), `rfrm-redis-{{ .name }}` (master), `rfrs-redis-{{ .name }}` (slaves), `redis-{{ .name }}-external-lb` (LoadBalancer when `spec.external: true`) |
+| Sibling CR spec essentials | `size`, `replicas`, `authEnabled`, `external`, `version` (`v8`/`v7`), `storageClass` |
+
+Example Pattern C CR (rendered from the app chart's `templates/redis.yaml`):
+
+```yaml
+apiVersion: apps.cozystack.io/v1alpha1
+kind: Redis
+metadata:
+  name: {{ .Release.Name }}-redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  size: {{ .Values.redis.size }}
+  replicas: {{ .Values.redis.replicas }}
+  external: false
+  authEnabled: true
+```
+
+Wiring in the main workload HelmRelease:
+
+```yaml
+values:
+  app:
+    config:
+      redis:
+        host: rfs-redis-{{ .Release.Name }}-redis
+        port: 26379
+        sentinelMaster: mymaster
+valuesFrom:
+  - kind: Secret
+    name: redis-{{ .Release.Name }}-redis-auth
+    valuesKey: password
+    targetPath: app.config.redis.password
+```
+
+### Pattern C — other dependencies
+
+For `MariaDB`, `MongoDB`, `Kafka`, `ClickHouse`, `RabbitMQ`, `FoundationDB`, `Qdrant`, `OpenSearch`, `NATS`, `Openbao` — read the corresponding `packages/system/<dep>-rd/cozyrds/<dep>.yaml` and extract:
+
+- `spec.application.kind` — sibling CR kind.
+- `spec.release.prefix` — HelmRelease name prefix.
+- `spec.secrets.include.resourceNames` — exact Secret naming template (often `<prefix>{{ .name }}-credentials` or similar).
+- `spec.services.include.resourceNames` — Service naming templates.
+
+Do not extrapolate from the postgres/redis entries above. Each ApplicationDefinition declares its own naming contract.
+
+### Pattern A — research procedure (for dependencies not in the Pattern A catalog below)
 
 1. Locate a reference in the cozystack monorepo:
 
