@@ -42,7 +42,10 @@ Bail early if any check fails.
 
 Use `AskUserQuestion` to collect:
 
-1. **Chart source**: upstream Helm chart (provide repo URL + chart name + version) or custom templates from scratch?
+1. **Chart source**: is there a maintained first-party Helm chart for this app (official repo, community-run, appeared on Artifact Hub)?
+   - **Default: wrap the upstream chart via Flux `HelmRelease`**. You inherit upgrades, init-jobs, probes, PDBs, ingress templates, and every breaking-change mitigation the upstream maintainers ship. Phase 5 will register its `HelmRepository`; Phase 7 emits the wrapping `HelmRelease`.
+   - Fall back to **custom templates** only when no upstream chart exists, the upstream is abandoned, or it conflicts with Cozystack conventions in ways that cannot be overridden via values. Custom templates shift lifecycle ownership onto the skill's user — every upstream CVE must then be tracked by hand.
+   - Record `$CHART_SOURCE` as `upstream` or `custom`. If `upstream`, collect repo URL + chart name + version here (feeds Phase 5).
 2. **Container image**: image reference (e.g., `ghcr.io/immich-app/immich-server:v1.120.0`).
 3. **Public port**: does the app expose an HTTP port? If yes, which port number? Should an Ingress template be generated?
 4. **Persistent storage**: does the app need a PVC? If yes, default size (e.g., `10Gi`).
@@ -265,9 +268,11 @@ Create `packages/apps/$APP_NAME/templates/` with the following files.
 
 ### Main workload — $APP_NAME.yaml
 
-Generate the primary workload template. If the user chose "upstream Helm chart", wrap it in a Flux HelmRelease (like harbor does). If "custom templates", create a Deployment or StatefulSet directly.
+Generate the primary workload template. If Phase 3 recorded `$CHART_SOURCE = upstream`, emit a Flux `HelmRelease` wrapping the upstream chart — the preferred path. If `$CHART_SOURCE = custom`, emit a `Deployment` (or `StatefulSet`) authored from scratch.
 
-**For a Flux HelmRelease wrapper example (upstream chart case):**
+#### Upstream chart wrapper (preferred)
+
+The HelmRelease registered below references the `HelmRepository` created in Phase 8 and injects cozystack-wired connection details via `values` and `valuesFrom`. `valuesFrom` is the cleanest way to pipe a password out of a Secret created by a Pattern C sibling CR (see Phase 4 Pattern C, Dependency catalog appendix) directly into the upstream chart's value path — no Deployment env rewriting required.
 
 ```yaml
 apiVersion: helm.toolkit.fluxcd.io/v2
@@ -275,24 +280,60 @@ kind: HelmRelease
 metadata:
   name: {{ .Release.Name }}
 spec:
-  interval: 1h
+  interval: 5m
   chart:
     spec:
-      chart: $UPSTREAM_CHART_NAME
-      version: $UPSTREAM_CHART_VERSION
+      chart: $SOURCE_CHART_NAME
+      version: $SOURCE_CHART_VERSION
       sourceRef:
         kind: HelmRepository
-        name: $UPSTREAM_REPO_NAME
-        namespace: cozy-public
+        name: $SOURCE_REPO_NAME
+        namespace: $SOURCE_NAMESPACE
+  # dependsOn ensures sibling cozystack CRs reconcile before this release tries to use their outputs.
+  # Reference the generated HelmReleases (named `<dep-prefix><dep-cr-name>`) that cozystack controllers
+  # produce from the Pattern C sibling CRs you emit in templates/postgres.yaml, templates/redis.yaml, etc.
+  dependsOn:
+    - name: postgres-{{ .Release.Name }}-db
+      namespace: {{ .Release.Namespace }}
+    - name: redis-{{ .Release.Name }}-redis
+      namespace: {{ .Release.Namespace }}
+  # Disable the upstream chart's bundled subcharts — we provide backing services via Pattern C.
   values:
-    # Map .Values.* to the upstream chart's value schema here.
-    # Pull credentials from the CNPG secret (Pattern A) or from
-    # .Values.postgres.* (Pattern B) as established in Phase 4.
+    postgresql:    { enabled: false }
+    postgresql-ha: { enabled: false }
+    redis:         { enabled: false }
+    redis-cluster: { enabled: false }
+    # Hostnames/ports are stable from the cozystack ApplicationDefinition naming convention
+    # (postgres-<name>-rw, rfs-redis-<name> — see Dependency catalog Pattern C entries).
+    # Username, database name, and port values come from the spec recorded in Phase 4.
+    app:
+      config:
+        database:
+          host: postgres-{{ .Release.Name }}-db-rw
+          port: 5432
+          name: $APP_DB_NAME
+          user: $APP_DB_USER
+        redis:
+          host: rfs-redis-{{ .Release.Name }}-redis
+          port: 26379
+          sentinelMaster: mymaster
+  # Secrets must be read at reconcile time — never inline passwords into values.
+  valuesFrom:
+    - kind: Secret
+      name: postgres-{{ .Release.Name }}-db-credentials
+      valuesKey: $APP_DB_USER
+      targetPath: app.config.database.password
+    - kind: Secret
+      name: redis-{{ .Release.Name }}-redis-auth
+      valuesKey: password
+      targetPath: app.config.redis.password
 ```
 
-The referenced `HelmRepository` resource must exist in the cluster. If it does not, register it in Phase 8 alongside the other platform resources.
+Replace the `app.config.*` value paths with the actual schema of your upstream chart — this example uses a generic layout. Common real-world paths: Gitea uses `gitea.config.database.HOST`/`PASSWD`, Immich uses `immich.env.DB_HOSTNAME`/`DB_PASSWORD`, Nextcloud uses `internalDatabase.*`. Verify against the upstream chart's `values.yaml` before wiring.
 
-**For a direct Deployment example:**
+The referenced `HelmRepository` must exist in the cluster. Phase 8 registers it using the `$SOURCE_*` variables gathered in Phase 5.
+
+#### Custom Deployment (fallback)
 
 ```yaml
 apiVersion: apps/v1
