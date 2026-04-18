@@ -578,13 +578,17 @@ spec:
   {{- end }}
   users:
     {{ .Values.database.user }}:
-      password: {{ .Values.database.password | default (randAlphaNum 32) | quote }}
+      {{- with .Values.database.password }}
+      password: {{ . | quote }}
+      {{- end }}
   databases:
     {{ .Values.database.name }}:
       roles:
         admin:
           - {{ .Values.database.user }}
 ```
+
+Omit `password` when the user did not supply one. The downstream `packages/apps/postgres/` chart (`templates/init-script.yaml`) already uses Sprig's `lookup` to read the existing `postgres-{{ .Release.Name }}-db-credentials` Secret and reuses the password on subsequent renders. Passing `randAlphaNum` from this chart would generate a fresh value on every reconcile and silently rotate the Secret mid-run.
 
 Outputs (rendered by the downstream `packages/apps/postgres/` chart):
 
@@ -1025,13 +1029,17 @@ spec:
   external: false
   users:
     {{ .Values.database.user }}:
-      password: {{ .Values.database.password | default (randAlphaNum 32) | quote }}
+      {{- with .Values.database.password }}
+      password: {{ . | quote }}
+      {{- end }}
   databases:
     {{ .Values.database.name }}:
       roles:
         admin:
           - {{ .Values.database.user }}
 ```
+
+`password` is omitted unless the user explicitly supplied one — see the rationale in Phase 7's `postgres.yaml` section. The downstream `packages/apps/postgres/` chart generates and preserves the password itself via `lookup`.
 
 Wiring in the main workload HelmRelease:
 
