@@ -116,20 +116,26 @@ Collect:
 
 Present a summary of all dependencies with chosen patterns. Proceed only after user confirms.
 
-## Phase 5 — Gather operator specification (conditional)
+## Phase 5 — Register upstream Helm chart sources (conditional)
 
-Skip if `--operator` was not passed and the app does not need a custom operator.
+Flux reconciles external Helm charts via the `HelmRepository` resource. Two situations require a `HelmRepository` registration in this phase:
 
-The reference layout (`external-apps-example`) pulls operator charts at reconcile time via a flux `HelmRepository` — it does not vendor a local package in `packages/system/`. This phase gathers the details needed to register the `HelmRepository` and operator `HelmRelease` in Phase 8.
+1. **App wraps an upstream Helm chart** (see Phase 3 question 1). Example: Gitea wraps `https://dl.gitea.com/charts`.
+2. **App requires a dedicated operator** shipped as a separate chart. Example: `minecraft-operator` from `oci://ghcr.io/lexfrei/charts`.
 
-Use `AskUserQuestion` to collect:
+Skip this phase only if BOTH conditions are false (app uses custom templates AND no dedicated operator).
 
-- `$OPERATOR_REPO_TYPE` — `oci` if `$OPERATOR_REPO_URL` starts with `oci://`, otherwise leave empty (standard HTTPS Helm repo).
-- `$OPERATOR_CHART_NAME` — chart name inside the repository (e.g., `minecraft-operator`, `immich`).
-- `$OPERATOR_CHART_VERSION` — pinned chart version or semver range (e.g., `0.9.4`, `>=1.0.0`). Avoid `'*'` in production use.
-- `$OPERATOR_REPO_NAME` — local alias used as `HelmRepository.metadata.name` and referenced by the HelmRelease. Default: `$APP_NAME-operator`.
+For each source needed, use `AskUserQuestion` to collect:
 
-No files are created in this phase. All operator resources are written in Phase 8 alongside the other platform resources.
+- `$SOURCE_ROLE` — `main` (upstream chart for the app itself) or `operator` (dedicated operator chart).
+- `$SOURCE_REPO_URL` — repository URL. Prefix with `oci://` for OCI registries, otherwise use plain HTTPS.
+- `$SOURCE_REPO_TYPE` — `oci` if the URL starts with `oci://`, otherwise leave empty.
+- `$SOURCE_CHART_NAME` — chart name inside the repository (e.g., `gitea`, `minecraft-operator`, `immich`).
+- `$SOURCE_CHART_VERSION` — pinned version or semver range (e.g., `12.0.1`, `>=1.0.0`). Avoid `'*'` in production use.
+- `$SOURCE_REPO_NAME` — alias used as `HelmRepository.metadata.name`. Default: `$APP_NAME` for `main`, `$APP_NAME-operator` for `operator`.
+- `$SOURCE_NAMESPACE` — namespace the `HelmRepository` lives in. Default: `external-$APP_NAME-operator` for operator sources, `external-$APP_NAME` for main sources (the same namespace later hosts any app-scoped HelmRelease).
+
+No files are created in this phase. All source and release resources are written in Phase 8 alongside the other platform resources.
 
 ## Phase 6 — Create app chart skeleton
 
