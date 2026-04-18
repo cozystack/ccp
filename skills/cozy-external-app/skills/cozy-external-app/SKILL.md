@@ -525,7 +525,7 @@ spec:
   application:
     kind: $APP_KIND
     openAPISchema: |
-      <contents of values.schema.json>
+      <contents of values.schema.json, indented by 6 spaces so every line sits under the `|` block scalar>
     plural: $APP_PLURAL
     singular: $APP_NAME
   release:
@@ -552,6 +552,14 @@ To compute `$ICON_B64`:
 ```bash
 base64 < $REPO_DIR/packages/apps/$APP_NAME/logos/$APP_NAME.svg | tr -d '\n'
 ```
+
+To produce the correctly indented `openAPISchema` block when composing the CRD inline, prefix every line of `values.schema.json` with six spaces so the JSON becomes a valid child of the `|` literal scalar:
+
+```bash
+sed 's/^/      /' $REPO_DIR/packages/apps/$APP_NAME/values.schema.json
+```
+
+Verify the final YAML with `yq e '.' cozyrds.yaml > /dev/null` before moving on — an off-by-one indentation silently breaks the schema.
 
 If `hack/update-crd.sh` exists and is functional, prefer running it instead of manually composing the CRD:
 ```bash
