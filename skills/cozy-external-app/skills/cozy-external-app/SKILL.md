@@ -439,13 +439,72 @@ Add env vars for each dependency based on the pattern chosen in Phase 4.
               key: password
 ```
 
-### Dependency creation templates (Pattern A only)
+### Dependency creation templates (Pattern A and Pattern C)
 
-For each Pattern A dependency recorded in Phase 4, emit one template file under `packages/apps/$APP_NAME/templates/`, named after the dependency (`database.yaml`, `redis.yaml`, `mongodb.yaml`, etc.). Each template must reflect the CR identity and wiring captured during Phase 4 research — do not reuse the postgres pattern for other dependencies.
+For each Pattern A or Pattern C dependency recorded in Phase 4, emit one template file under `packages/apps/$APP_NAME/templates/`, named after the dependency (`postgres.yaml`, `redis.yaml`, `mariadb.yaml`, …). Each template must reflect the CR identity and wiring captured during Phase 4 — do not reuse the postgres pattern for other dependencies.
 
-The `database.yaml` and `redis.yaml` examples below correspond to the catalog entries at the end of this skill. For anything else (mongodb, kafka, clickhouse, opensearch, …), open the reference template recorded in Phase 4 and mirror its structure; do not invent spec fields.
+The Pattern C examples below are the preferred shape for external apps; the Pattern A examples (system-style, in-chart operator CR) follow for the escape-hatch case. For Pattern B there is no per-dep template to emit — the app chart merely reads connection values the user supplies.
 
-#### database.yaml — postgres via CloudNativePG
+#### postgres.yaml — Pattern C (cozystack `Postgres` sibling CR)
+
+Reference: `cozystack/packages/system/postgres-rd/cozyrds/postgres.yaml` (authoritative contract), `cozystack/packages/apps/postgres/templates/` (what the downstream chart renders). Pattern C is the cleanest path: the app chart creates one cozystack CR, the controller does the rest.
+
+```yaml
+---
+apiVersion: apps.cozystack.io/v1alpha1
+kind: Postgres
+metadata:
+  name: {{ .Release.Name }}-db
+  namespace: {{ .Release.Namespace }}
+spec:
+  size: {{ .Values.database.size }}
+  replicas: {{ .Values.database.replicas }}
+  external: false
+  {{- with .Values.storageClass }}
+  storageClass: {{ . }}
+  {{- end }}
+  users:
+    {{ .Values.database.user }}:
+      password: {{ .Values.database.password | default (randAlphaNum 32) | quote }}
+  databases:
+    {{ .Values.database.name }}:
+      roles:
+        admin:
+          - {{ .Values.database.user }}
+```
+
+Outputs (rendered by the downstream `packages/apps/postgres/` chart):
+
+- Secret `postgres-{{ .Release.Name }}-db-credentials` — one key per user, value is the password.
+- Services `postgres-{{ .Release.Name }}-db-rw`, `-r`, `-ro`; port `5432`.
+
+Consume these from the main workload HelmRelease via `values` + `valuesFrom` (see Phase 7 Main workload and Dependency catalog Pattern C appendix).
+
+#### redis.yaml — Pattern C (cozystack `Redis` sibling CR)
+
+```yaml
+---
+apiVersion: apps.cozystack.io/v1alpha1
+kind: Redis
+metadata:
+  name: {{ .Release.Name }}-redis
+  namespace: {{ .Release.Namespace }}
+spec:
+  size: {{ .Values.redis.size }}
+  replicas: {{ .Values.redis.replicas }}
+  external: false
+  authEnabled: true
+  {{- with .Values.storageClass }}
+  storageClass: {{ . }}
+  {{- end }}
+```
+
+Outputs (rendered by the downstream `packages/apps/redis/` chart):
+
+- Secret `redis-{{ .Release.Name }}-redis-auth` — key `password`.
+- Sentinel service `rfs-redis-{{ .Release.Name }}-redis` on port `26379`.
+
+#### database.yaml — Pattern A (in-chart CloudNativePG `Cluster`)
 
 Reference: `cozystack/packages/system/harbor/templates/database.yaml`.
 
@@ -482,7 +541,7 @@ Outputs (auto-created by the CNPG operator; no chart-side Secret):
 - Secret `{{ .Release.Name }}-db-app` — keys `host`, `port`, `username`, `password`, `dbname`, `uri`, `jdbc-uri`.
 - Services `{{ .Release.Name }}-db-rw` (primary), `-db-r` (read replicas), `-db-ro` (read-only).
 
-#### redis.yaml — redis via Spotahome RedisFailover
+#### redis.yaml — Pattern A (in-chart Spotahome `RedisFailover`)
 
 Reference: `cozystack/packages/system/harbor/templates/redis.yaml`.
 
@@ -773,7 +832,8 @@ Print a report:
 - **App name**: `$APP_NAME`
 - **Files created** (list all new files with paths relative to repo root)
 - **Files modified** (list all modified files under `packages/core/platform/templates/`: `namespaces.yaml`, `helmrepositories.yaml`, `helmreleases.yaml`, `helmcharts.yaml`, `cozyrds.yaml`)
-- **Dependencies**: for each dependency, state the chosen pattern (A: managed / B: external) and which secrets the app consumes
+- **Dependencies**: for each dependency, state the chosen pattern (C: sibling cozystack CR / A: in-chart operator CR / B: external reference) and which Secret/Service the app consumes
+- **Chart source**: `upstream` (HelmRelease wrapper; note upstream repo + chart name + version) or `custom` (hand-written Deployment/StatefulSet)
 - **Operator**: created or not, chart source
 - **Dashboard**: category, tags, icon status (present / missing)
 - **Next steps for the user**:
