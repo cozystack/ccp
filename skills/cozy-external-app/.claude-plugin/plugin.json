@@ -1,7 +1,7 @@
 {
   "name": "cozy-external-app",
   "version": "1.0.0",
-  "description": "Scaffold a new Cozystack external app package — generates chart skeleton, CozystackResourceDefinition, and handles dependency integration (e.g. Immich → Postgres) via managed CNPG clusters or external secret references",
+  "description": "Scaffold a new Cozystack external app package — generates chart skeleton, ApplicationDefinition, and handles dependency integration (e.g. Immich → Postgres) via managed CNPG clusters or external secret references",
   "author": {
     "name": "Cozystack",
     "url": "https://github.com/cozystack"

@@ -1,12 +1,12 @@
 ---
 name: cozy-external-app
-description: Scaffold a new Cozystack external app package inside an external-apps repository. Generates the full chart skeleton (Chart.yaml, Makefile, values.yaml with cozyvalues-gen annotations, templates), registers it in core/platform (namespace, HelmRelease, CozystackResourceDefinition), and wires dependency integration — supports managed CNPG Postgres clusters provisioned in-chart and external secret references for pre-existing services. Use when adding a new application (e.g. Immich, Gitea, Nextcloud) to an external-apps repo that follows the cozystack/external-apps-example layout.
+description: Scaffold a new Cozystack external app package inside an external-apps repository. Generates the full chart skeleton (Chart.yaml, Makefile, values.yaml with cozyvalues-gen annotations, templates), registers it in core/platform (namespace, HelmRepository, HelmChart, HelmRelease, ApplicationDefinition), and wires dependency integration — supports managed CNPG Postgres clusters provisioned in-chart and external secret references for pre-existing services. Use when adding a new application (e.g. Immich, Gitea, Nextcloud) to an external-apps repo that follows the cozystack/external-apps-example layout.
 argument-hint: "<app-name> [--depends-on=postgres,redis] [--operator=<chart-repo-url>] [--repo-dir=<path>]"
 ---
 
 # cozy-external-app
 
-This skill scaffolds a new Cozystack external app package. It creates all files needed for the app to appear in the Cozystack dashboard and be deployable via the GitOps pipeline (GitRepository → Flux HelmRelease → CozystackResourceDefinition).
+This skill scaffolds a new Cozystack external app package. It creates all files needed for the app to appear in the Cozystack dashboard and be deployable via the GitOps pipeline (GitRepository → Flux HelmRelease → ApplicationDefinition).
 
 This is a **generate-only** skill. It never applies anything to a cluster, never commits, and never pushes. The user handles git operations themselves.
 
@@ -48,7 +48,7 @@ Use `AskUserQuestion` to collect:
 4. **Persistent storage**: does the app need a PVC? If yes, default size (e.g., `10Gi`).
 5. **Icon**: path to an SVG file for the dashboard. If not available yet, note it — Phase 6 will create a `logos/` placeholder and Phase 9 will fail until the user provides one.
 6. **Dashboard metadata**: Display Name (e.g., `Immich`), Description (e.g., `Self-hosted photo and video management solution`), Category (e.g., `Media`), and Tags (comma-separated list, e.g., `photo, video`).
-7. **Resource definition**: Kind (e.g., `Immich`) and Plural (e.g., `immichs`) for the `CozystackResourceDefinition` created in Phase 8.
+7. **Resource definition**: Kind (e.g., `Immich`) and Plural (e.g., `immichs`) for the `ApplicationDefinition` created in Phase 8.
 
 Record all answers. Proceed only after user confirms the summary.
 
@@ -449,7 +449,7 @@ Use `AskUserQuestion` to confirm the generated templates before writing them. Sh
 
 Update three files under `packages/core/platform/templates/`. Read each file first, then append.
 
-Before generating any YAML in this phase, extract the GitRepository name from `init.yaml` — it is referenced as `sourceRef.name` in both the operator HelmRelease and the CozystackResourceDefinition below:
+Before generating any YAML in this phase, extract the GitRepository name from `init.yaml` — it is referenced as `sourceRef.name` in both the operator HelmRelease and the ApplicationDefinition below:
 
 ```bash
 GIT_REPO_NAME=$(yq -r '.metadata.name' $REPO_DIR/init.yaml | head -1)
@@ -512,12 +512,12 @@ spec:
 
 ### cozyrds.yaml
 
-Append a `CozystackResourceDefinition` for the app. The `openAPISchema` must match `values.schema.json` content.
+Append a `ApplicationDefinition` for the app. The `openAPISchema` must match `values.schema.json` content.
 
 ```yaml
 ---
 apiVersion: cozystack.io/v1alpha1
-kind: CozystackResourceDefinition
+kind: ApplicationDefinition
 metadata:
   name: $APP_NAME
   namespace: cozy-system
@@ -566,7 +566,7 @@ If `hack/update-crd.sh` exists and is functional, prefer running it instead of m
 cd $REPO_DIR/packages/apps/$APP_NAME && make generate
 ```
 
-This runs `cozyvalues-gen` (regenerates schema + README) and `hack/update-crd.sh` (updates the CozystackResourceDefinition with correct openAPISchema, icon, keysOrder). Check the output path — the script writes to `../../system/cozystack-resource-definitions/cozyrds/$APP_NAME.yaml` by default. If that directory does not exist (it won't in external-apps repos), the script may fail. In that case, manually compose the CRD entry and append it to `packages/core/platform/templates/cozyrds.yaml`.
+This runs `cozyvalues-gen` (regenerates schema + README) and `hack/update-crd.sh` (updates the ApplicationDefinition with correct openAPISchema, icon, keysOrder). Check the output path — the script writes to `../../system/cozystack-resource-definitions/cozyrds/$APP_NAME.yaml` by default. If that directory does not exist (it won't in external-apps repos), the script may fail. In that case, manually compose the CRD entry and append it to `packages/core/platform/templates/cozyrds.yaml`.
 
 **Important**: read `hack/update-crd.sh` to check the `$OUT` variable default. If it points to a non-existent path, set `OUT` explicitly:
 ```bash
@@ -645,7 +645,7 @@ Print a report:
 
 Read these files on demand when reasoning about structure and conventions:
 
-- `packages/core/platform/templates/cozyrds.yaml` — existing CozystackResourceDefinition entries, structure reference
+- `packages/core/platform/templates/cozyrds.yaml` — existing ApplicationDefinition entries, structure reference
 - `packages/core/platform/templates/helmreleases.yaml` — existing HelmRelease entries for operators
 - `packages/core/platform/templates/namespaces.yaml` — existing namespace entries
 - `hack/update-crd.sh` — how icon base64 encoding, openAPISchema injection, and keysOrder generation work
