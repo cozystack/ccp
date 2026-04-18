@@ -37,6 +37,12 @@ Bail early if any check fails.
    ```
    Do not install it automatically. Stop.
 3. **No collision**: verify `packages/apps/$APP_NAME/` does not already exist. If it does, stop and ask the user whether to overwrite or pick a different name.
+4. **Cozystack contract resolution source**: Phase 4 Step 2 needs to read `packages/system/<dep>-rd/cozyrds/<dep>.yaml` from cozystack. Detect the best available source in this order and record it as `$COZYSTACK_CONTRACT_SOURCE`:
+   - `local` — `$COZYSTACK_REPO` is set and points at a cozystack checkout containing `packages/system/`. Fastest, works offline.
+   - `github` — `gh` CLI is authenticated (`gh auth status` succeeds). Resolves against `cozystack/cozystack@main`.
+   - `cluster` — `kubectl config current-context` succeeds and the target context is a cozystack cluster. Authoritative for that cluster version; read-only.
+
+   If none is available, warn the user. Phase 4 Pattern C will be unavailable; only Patterns A and B remain.
 
 ## Phase 3 — Gather app specification
 
@@ -1094,7 +1100,8 @@ Unlike CNPG, the Spotahome operator does NOT emit connection details. The chart 
 - **Never** commit or push on behalf of the user. This is a generate-only skill.
 - **Never** apply anything to a cluster — no `kubectl apply`, no `helm install`, no `make apply`. This skill only creates files.
 - **Never** overwrite existing `packages/apps/$APP_NAME/` without explicit user confirmation.
-- **Never** guess a dependency's CR shape, Secret name, or Secret keys. For every Pattern A dependency the research step in Phase 4 is mandatory — use the Dependency catalog appendix first; for anything not in the catalog, open a reference implementation in the cozystack monorepo before writing templates. If research does not yield a verified answer, stop and ask.
+- **Never** skip Phase 4 Step 1 (chart requirement analysis) or Step 2 (contract resolution). Every Pattern C dependency must have a `$DEP_CONTRACT` record with `kind`, `prefix`, `secretTemplates`, `serviceTemplates`, and `specSchema` resolved from a cozystack source before Phase 7 emits any template. No speculation — if resolution fails, Pattern C is unavailable for that dep.
+- **Never** guess a dependency's CR shape, Secret name, or Secret keys. For Pattern A deps the operator-CR research step is mandatory — use the Pattern A catalog first; for anything not in the catalog, open a reference implementation in the cozystack monorepo before writing templates. If research does not yield a verified answer, stop and ask.
 - **Never** copy the postgres/CNPG wiring onto a different dependency. CNPG auto-creates the credentials Secret; Spotahome RedisFailover does not (the chart creates it). Other operators differ further — always verify.
 - **Never** edit files in a cozystack checkout used as reference — those are read-only.
 - **Never** modify `init.yaml` — the user manages their GitRepository and root HelmRelease manually.
@@ -1113,6 +1120,7 @@ Read these files on demand when reasoning about structure and conventions:
 - `packages/core/platform/templates/namespaces.yaml` — existing namespace entries
 - `scripts/package.mk` — make targets: `show`, `apply`, `diff`, `suspend`, `resume`, `delete`. Requires `NAME` and `NAMESPACE` exports.
 - `init.yaml` — GitRepository name and root HelmRelease (needed for sourceRef in CRD and HelmRelease)
+- `packages/system/<dep>-rd/cozyrds/<dep>.yaml` — authoritative contract per dep. Resolved at runtime by Phase 4 Step 2 from `$COZYSTACK_REPO`, `gh api repos/cozystack/cozystack`, or `kubectl get applicationdefinition <dep>` in that order.
 - Cozystack external apps docs: https://cozystack.io/docs/applications/external/
 - Flux HelmRelease spec (dependsOn): https://fluxcd.io/flux/components/helm/helmreleases/
 - CloudNativePG Cluster CRD: https://cloudnative-pg.io/documentation/current/cloudnative-pg.v1/
