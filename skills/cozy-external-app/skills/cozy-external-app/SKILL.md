@@ -47,6 +47,8 @@ Use `AskUserQuestion` to collect:
 3. **Public port**: does the app expose an HTTP port? If yes, which port number? Should an Ingress template be generated?
 4. **Persistent storage**: does the app need a PVC? If yes, default size (e.g., `10Gi`).
 5. **Icon**: path to an SVG file for the dashboard. If not available yet, note it — Phase 6 will create a `logos/` placeholder and Phase 9 will fail until the user provides one.
+6. **Dashboard metadata**: Display Name (e.g., `Immich`), Description (e.g., `Self-hosted photo and video management solution`), Category (e.g., `Media`), and Tags (comma-separated list, e.g., `photo, video`).
+7. **Resource definition**: Kind (e.g., `Immich`) and Plural (e.g., `immichs`) for the `CozystackResourceDefinition` created in Phase 8.
 
 Record all answers. Proceed only after user confirms the summary.
 
