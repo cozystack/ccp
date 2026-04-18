@@ -128,13 +128,19 @@ icon: /logos/$APP_NAME.svg
 
 ### Makefile
 
+The generated Makefile must export `NAME` and `NAMESPACE` — `scripts/package.mk` has a `check:` target (a dependency of `apply`, `show`, `diff`, `delete`, `suspend`, `resume`) that exits with `env NAME is not set!` when either is empty. `$NAMESPACE` should be the operator namespace when the app depends on one, otherwise use `cozy-system`.
+
 ```makefile
+export NAME=$APP_NAME
+export NAMESPACE=<operator-namespace or cozy-system>
+
 include ../../../scripts/package.mk
 
 generate:
-	cozyvalues-gen -v values.yaml -s values.schema.json -r README.md
-	../../../hack/update-crd.sh
+	cozyvalues-gen --values values.yaml --schema values.schema.json --readme README.md
 ```
+
+The reference `external-apps-example` repo does not ship `hack/update-crd.sh` — that script lives only in the cozystack monorepo. Do not call it from the generated Makefile. The `ApplicationDefinition` entry in `cozyrds.yaml` is composed by hand in Phase 8.
 
 ### logos/$APP_NAME.svg
 
@@ -579,22 +585,6 @@ sed 's/^/      /' $REPO_DIR/packages/apps/$APP_NAME/values.schema.json
 
 Verify the final YAML with `yq e '.' cozyrds.yaml > /dev/null` before moving on — an off-by-one indentation silently breaks the schema.
 
-If `hack/update-crd.sh` exists and is functional, prefer running it instead of manually composing the CRD:
-```bash
-cd $REPO_DIR/packages/apps/$APP_NAME && make generate
-```
-
-This runs `cozyvalues-gen` (regenerates schema + README) and `hack/update-crd.sh` (updates the ApplicationDefinition with correct openAPISchema, icon, keysOrder). Check the output path — the script writes to `../../system/cozystack-resource-definitions/cozyrds/$APP_NAME.yaml` by default. If that directory does not exist (it won't in external-apps repos), the script may fail. In that case, manually compose the CRD entry and append it to `packages/core/platform/templates/cozyrds.yaml`.
-
-**Important**: read `hack/update-crd.sh` to check the `$OUT` variable default. If it points to a non-existent path, set `OUT` explicitly:
-```bash
-OUT=$REPO_DIR/packages/core/platform/templates/cozyrds-$APP_NAME.yaml \
-  CRD_DIR="" \
-  bash $REPO_DIR/hack/update-crd.sh
-```
-
-Or simply append the generated YAML block to `cozyrds.yaml` manually.
-
 Use `AskUserQuestion` to confirm all core/platform changes before writing. Show the diff of what will be appended to each file.
 
 ## Phase 9 — Validation
@@ -657,7 +647,6 @@ Print a report:
 - **Always** use `AskUserQuestion` before creating files in Phase 6, 7, and 8. Show what will be created.
 - **Always** read existing files before appending to them (`namespaces.yaml`, `helmrepositories.yaml`, `helmreleases.yaml`, `helmcharts.yaml`, `cozyrds.yaml`).
 - If `cozyvalues-gen` is not installed, do not attempt to generate schema/README manually beyond a minimal placeholder. Tell the user to install it and re-run `make generate`.
-- If `hack/update-crd.sh` output path does not exist, handle gracefully — generate the CRD inline rather than failing silently.
 
 ## References
 
@@ -665,9 +654,10 @@ Read these files on demand when reasoning about structure and conventions:
 
 - `packages/core/platform/templates/cozyrds.yaml` — existing ApplicationDefinition entries, structure reference
 - `packages/core/platform/templates/helmreleases.yaml` — existing HelmRelease entries for operators
+- `packages/core/platform/templates/helmrepositories.yaml` — existing HelmRepository entries for operator chart sources
+- `packages/core/platform/templates/helmcharts.yaml` — existing HelmChart entries that back each app's `release.chartRef`
 - `packages/core/platform/templates/namespaces.yaml` — existing namespace entries
-- `hack/update-crd.sh` — how icon base64 encoding, openAPISchema injection, and keysOrder generation work
-- `scripts/package.mk` — make targets: `show`, `apply`, `diff`, `suspend`, `resume`, `delete`
+- `scripts/package.mk` — make targets: `show`, `apply`, `diff`, `suspend`, `resume`, `delete`. Requires `NAME` and `NAMESPACE` exports.
 - `init.yaml` — GitRepository name and root HelmRelease (needed for sourceRef in CRD and HelmRelease)
 - Cozystack external apps docs: https://cozystack.io/docs/applications/external/
 - Flux HelmRelease spec (dependsOn): https://fluxcd.io/flux/components/helm/helmreleases/
