@@ -364,9 +364,15 @@ Add env vars for each dependency based on the pattern chosen in Phase 4.
               key: password
 ```
 
-### database.yaml (Pattern A only)
+### Dependency creation templates (Pattern A only)
 
-Create a CNPG Cluster resource. Follow the exact pattern from cozystack `system/harbor/templates/database.yaml`:
+For each Pattern A dependency recorded in Phase 4, emit one template file under `packages/apps/$APP_NAME/templates/`, named after the dependency (`database.yaml`, `redis.yaml`, `mongodb.yaml`, etc.). Each template must reflect the CR identity and wiring captured during Phase 4 research — do not reuse the postgres pattern for other dependencies.
+
+The `database.yaml` and `redis.yaml` examples below correspond to the catalog entries at the end of this skill. For anything else (mongodb, kafka, clickhouse, opensearch, …), open the reference template recorded in Phase 4 and mirror its structure; do not invent spec fields.
+
+#### database.yaml — postgres via CloudNativePG
+
+Reference: `cozystack/packages/system/harbor/templates/database.yaml`.
 
 ```yaml
 ---
@@ -396,11 +402,56 @@ spec:
       policy.cozystack.io/allow-to-apiserver: "true"
 ```
 
-The CNPG operator automatically creates:
-- Secret `{{ .Release.Name }}-db-app` with keys: `host`, `port`, `username`, `password`, `dbname`, `uri`, `jdbc-uri`
-- Service `{{ .Release.Name }}-db-rw` (read-write primary)
-- Service `{{ .Release.Name }}-db-r` (read replicas)
-- Service `{{ .Release.Name }}-db-ro` (read-only replicas)
+Outputs (auto-created by the CNPG operator; no chart-side Secret):
+
+- Secret `{{ .Release.Name }}-db-app` — keys `host`, `port`, `username`, `password`, `dbname`, `uri`, `jdbc-uri`.
+- Services `{{ .Release.Name }}-db-rw` (primary), `-db-r` (read replicas), `-db-ro` (read-only).
+
+#### redis.yaml — redis via Spotahome RedisFailover
+
+Reference: `cozystack/packages/system/harbor/templates/redis.yaml`.
+
+The chart creates the Secret **before** the CR — the operator reads it via `spec.auth.secretPath`:
+
+```yaml
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-redis-auth
+stringData:
+  password: {{ .Values.redis.password | quote }}
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: {{ .Release.Name }}-redis
+spec:
+  sentinel:
+    replicas: 3
+  redis:
+    replicas: {{ .Values.redis.replicas }}
+    storage:
+      persistentVolumeClaim:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: {{ .Values.redis.size }}
+          {{- with .Values.storageClass }}
+          storageClassName: {{ . }}
+          {{- end }}
+  auth:
+    secretPath: {{ .Release.Name }}-redis-auth
+```
+
+Outputs:
+
+- Secret `{{ .Release.Name }}-redis-auth` (chart-created) — key `password`.
+- Sentinel service `rfs-{{ .Release.Name }}-redis` on port `26379`.
+
+If `.Values.redis.password` is empty, generate a password inline so re-renders are stable — see the [`randAlphaNum`](https://pkg.go.dev/github.com/Masterminds/sprig/v3#hdr-String_Functions) Sprig helper and the `lookup` function to reuse an existing Secret on upgrade.
 
 ### service.yaml (if app exposes a port)
 
@@ -729,7 +780,8 @@ Unlike CNPG, the Spotahome operator does NOT emit connection details. The chart 
 - **Never** commit or push on behalf of the user. This is a generate-only skill.
 - **Never** apply anything to a cluster — no `kubectl apply`, no `helm install`, no `make apply`. This skill only creates files.
 - **Never** overwrite existing `packages/apps/$APP_NAME/` without explicit user confirmation.
-- **Never** guess CNPG secret names or key names. The verified convention is: Cluster `<name>-db` → Secret `<name>-db-app` with keys `host`, `port`, `username`, `password`, `dbname`. If the user's scenario differs (e.g., custom bootstrap, non-standard secret names), stop and ask.
+- **Never** guess a dependency's CR shape, Secret name, or Secret keys. For every Pattern A dependency the research step in Phase 4 is mandatory — use the Dependency catalog appendix first; for anything not in the catalog, open a reference implementation in the cozystack monorepo before writing templates. If research does not yield a verified answer, stop and ask.
+- **Never** copy the postgres/CNPG wiring onto a different dependency. CNPG auto-creates the credentials Secret; Spotahome RedisFailover does not (the chart creates it). Other operators differ further — always verify.
 - **Never** edit files in a cozystack checkout used as reference — those are read-only.
 - **Never** modify `init.yaml` — the user manages their GitRepository and root HelmRelease manually.
 - **Always** use `AskUserQuestion` before creating files in Phase 6, 7, and 8. Show what will be created.
