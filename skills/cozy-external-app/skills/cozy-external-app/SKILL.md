@@ -55,97 +55,142 @@ Use `AskUserQuestion` to collect:
 
 Record all answers. Proceed only after user confirms the summary.
 
-## Phase 4 — Gather dependency specification
+## Phase 4 — Resolve and gather dependencies
 
-If `--depends-on` was not passed, use `AskUserQuestion`: "Does this app need any backing services (e.g., postgres, redis, mongodb)? List them or say 'none'."
+Dependencies are **discovered from the app itself**, not asked blind. The phase runs in five steps: discover what the app needs, resolve each against a cozystack contract, pick the integration pattern, collect spec values, record wiring. Never skip Steps 1–2 — they are what prevent wrong or invented Secret/Service references.
 
-For each dependency, determine the **integration pattern** via `AskUserQuestion`. Three patterns exist — the recommended default for external apps is **Pattern C**.
+### Step 1 — Chart requirement analysis
 
-### Pattern C — Sibling Cozystack ApplicationDefinition (recommended for external apps)
+Discover candidate dependencies from the chart itself.
 
-The app chart creates a **cozystack-level CR** (e.g., `Redis`, `Postgres`, `MariaDB`, `Kafka`) in its own templates. The cozystack controller then reconciles that CR into a HelmRelease which deploys the corresponding `packages/apps/<dep>/` chart — the same chart dashboard users invoke when they deploy Redis/Postgres manually.
+**When `$CHART_SOURCE = upstream`:** pull the upstream chart metadata once and inspect it.
+
+```bash
+helm repo add --force-update $SOURCE_REPO_NAME $SOURCE_REPO_URL    # HTTPS repos only
+helm show chart   $SOURCE_REPO_NAME/$SOURCE_CHART_NAME --version $SOURCE_CHART_VERSION > /tmp/Chart.yaml
+helm show values  $SOURCE_REPO_NAME/$SOURCE_CHART_NAME --version $SOURCE_CHART_VERSION > /tmp/values.yaml
+helm show readme  $SOURCE_REPO_NAME/$SOURCE_CHART_NAME --version $SOURCE_CHART_VERSION > /tmp/README.md
+```
+
+For OCI sources use `oci://$SOURCE_REPO_URL/$SOURCE_CHART_NAME` directly — `helm show` handles OCI without `repo add`.
+
+Extract three signals:
+
+1. **Declared subcharts** from `Chart.yaml → dependencies[]`. Match names from this vocabulary: `postgresql`, `postgresql-ha`, `mariadb`, `mysql`, `redis`, `redis-cluster`, `valkey`, `mongodb`, `kafka`, `clickhouse`, `rabbitmq`, `memcached`, `nats`, `minio`. Every matched subchart is a candidate dep — note its `enabled` default and which values key disables it (typically `<subchart-alias>.enabled: false`).
+2. **Config paths** in `values.yaml`. Recurse and record every path matching these keywords until you reach a leaf with `host`, `hostname`, `url`, `dsn`, `uri`, `password`, `user`, `username`, `database`, `dbname`, `port`: `database`, `db`, `postgres*`, `mysql`, `mariadb`, `cache`, `redis`, `valkey`, `session`, `queue`, `broker`, `mongodb`, `kafka`, `rabbitmq`, `memcached`. These paths are the `targetPath` values the app chart will later inject via `valuesFrom`.
+3. **README hints** — maintainers usually call out supported databases ("supports PostgreSQL, MySQL, SQLite") near the top and show sample values for external services. Treat this as narrative context, not definitive — the actual schema in `values.yaml` wins on conflict.
+
+Emit findings in a table:
+
+| Dependency | Signals | Wiring path(s) | Subchart to disable |
+| --- | --- | --- | --- |
+| postgres | Chart dep `postgresql-ha`; values keys `gitea.config.database.*` | `gitea.config.database.HOST`, `…USER`, `…NAME`, `…PASSWD` | `postgresql-ha.enabled: false` |
+| redis | Values keys `gitea.config.cache.*`, `gitea.config.session.*` | `gitea.config.cache.HOST`, `…PASSWORD` | `redis-cluster.enabled: false` |
+
+Present the table to the user via `AskUserQuestion`: "Detected these dependencies from the chart. Add, remove, or mark any as optional?" This is where heuristics can be corrected — the user might know the app can use one of several databases, or that a detected cache is optional.
+
+**When `$CHART_SOURCE = custom`:** there is no chart to introspect. Ask the user directly which backing services the app needs and, for each, which config file / env variable the app reads.
+
+### Step 2 — Contract resolution (per dependency)
+
+For each dependency from Step 1, resolve a `$DEP_CONTRACT` from cozystack. Try these sources in order; stop at the first success:
+
+1. **Local cozystack checkout** — when `$COZYSTACK_REPO` is set (or detectable as a sibling dir of `$REPO_DIR`). Read:
+
+   ```bash
+   cat $COZYSTACK_REPO/packages/system/<dep>-rd/cozyrds/<dep>.yaml
+   ```
+
+2. **GitHub API** — when `gh` CLI is available. Fetch directly from upstream cozystack:
+
+   ```bash
+   gh api repos/cozystack/cozystack/contents/packages/system/<dep>-rd/cozyrds/<dep>.yaml \
+     --jq .content | base64 --decode
+   ```
+
+3. **Live cluster** — when `kubectl` has a usable context (`kubectl config current-context` succeeds) AND the dep's ApplicationDefinition is installed:
+
+   ```bash
+   kubectl get applicationdefinition <dep> --output yaml
+   ```
+
+Confirm the current context is the intended cozystack cluster before relying on this source (read-only operation, but still worth double-checking). This source is authoritative for *that specific cluster version* — if sources 1 or 2 disagree, prefer the live source and note the drift to the user.
+
+From the resolved document, extract and record `$DEP_CONTRACT.<field>`:
+
+| Contract field | Source path in the ApplicationDefinition |
+| --- | --- |
+| `kind` | `spec.application.kind` (`Postgres`, `Redis`, `MariaDB`, …) |
+| `plural` | `spec.application.plural` |
+| `prefix` | `spec.release.prefix` (`postgres-`, `redis-`, …) |
+| `secretTemplates` | `spec.secrets.include[].resourceNames` (list of Go-template strings using `{{ .name }}`) |
+| `serviceTemplates` | `spec.services.include[].resourceNames` |
+| `specSchema` | `spec.application.openAPISchema` (JSON-parseable; drives Step 4) |
+| `apiVersion` | `apiVersion` of the ApplicationDefinition itself (typically `cozystack.io/v1alpha1`) |
+
+If all three sources fail, record Pattern C as **unavailable** for this dependency. The user must install the ApplicationDefinition in the target cluster, provide `$COZYSTACK_REPO`, or fall back to Pattern A or B.
+
+### Step 3 — Integration pattern choice
+
+For each dependency with a resolved `$DEP_CONTRACT`, offer the integration pattern via `AskUserQuestion`. Default is **Pattern C**; Pattern A and Pattern B are opt-ins. Pattern C is unavailable (greyed out) when Step 2 failed.
+
+- **Pattern C — Sibling cozystack ApplicationDefinition (recommended for external apps).** The app chart emits a `${DEP_CONTRACT.kind}` CR; cozystack reconciles it into its own HelmRelease; the app consumes the resulting Secret and Service. See the **Pattern C** subsection below.
+- **Pattern A — In-chart operator CR (system-style escape hatch).** The app chart creates the operator CR directly (CNPG `Cluster`, Spotahome `RedisFailover`, etc.). Use when no cozystack ApplicationDefinition exists for the dep or when the app is explicitly system-scoped (harbor/keycloak style). See the **Pattern A** subsection.
+- **Pattern B — External reference.** The user provides connection details via values; the app chart provisions nothing. See the **Pattern B** subsection.
+
+### Pattern C — Sibling cozystack ApplicationDefinition
+
+The app chart creates a `${DEP_CONTRACT.kind}` CR (e.g., `Postgres`, `Redis`) inside its own templates. The cozystack controller reconciles that CR into a HelmRelease named `${DEP_CONTRACT.prefix}<cr-name>`, deploying the corresponding `packages/apps/<dep>/` chart — the same chart a tenant invokes through the dashboard.
 
 Why this is the default for external apps:
 
-- Every sibling instance appears in the dashboard as a first-class entity. A tenant can list, inspect, back up, and restore it independently of the app.
-- WorkloadMonitor, PodMonitor, backup schedules, and migration logic shipped by cozystack's own `apps/<dep>/` chart apply automatically — none of that needs to be re-implemented per app.
-- Upgrading cozystack itself upgrades the dependency wiring for every consumer at once.
+- The sibling instance shows up in the dashboard as a first-class entity. A tenant can list, inspect, back up, and restore it independently of the wrapping app.
+- WorkloadMonitor, PodMonitor, backup schedules, and migrations shipped by cozystack's own `apps/<dep>/` chart apply automatically — none of that needs to be re-implemented per app.
+- Upgrading cozystack upgrades the dependency wiring for every consumer at once.
 
-Before collecting spec values, research the sibling ApplicationDefinition (see **Dependency catalog Pattern C** appendix). Each entry records the three facts the app chart needs to wire an instance correctly:
-
-1. **Prefix** — cozystack controller prepends this to the CR name when rendering the downstream HelmRelease. E.g., `Redis/foo` → HelmRelease `redis-foo`.
-2. **Credentials Secret name template** — where the downstream chart exposes passwords. E.g., `postgres-{{ .name }}-credentials`, `redis-{{ .name }}-auth`.
-3. **Services** — which Service names the downstream chart creates. E.g., `postgres-<name>-rw`, `rfs-redis-<name>`.
-
-These contracts are declared in `packages/system/<dep>-rd/cozyrds/<dep>.yaml` under `spec.secrets.include.resourceNames` and `spec.services.include.resourceNames` — authoritative per cozystack version.
-
-In Phase 7 the app chart emits one Pattern C CR per dependency (template `<dep>.yaml`), mapping chart values onto the CR's spec. The main workload HelmRelease (see Phase 7 Main workload) then references the downstream-emitted Secret via `valuesFrom` and targets the downstream Service via `values`.
-
-Spec parameters to collect depend on the sibling CR's own `openAPISchema`. Common fields:
-
-- `Postgres`: `size`, `replicas`, `users` (map of `<username>: password: <pw>`), `databases` (map of `<dbname>: roles: { admin: [users] }`).
-- `Redis`: `size`, `replicas`, `authEnabled` (default `true`), `storageClass`.
-- `MariaDB`, `MongoDB`, `Kafka`, `ClickHouse`: consult their ApplicationDefinition under `packages/system/<dep>-rd/cozyrds/<dep>.yaml`.
+All wiring is driven by `$DEP_CONTRACT` from Step 2 — never hardcode prefixes, secret names, or service names. Phase 7 emits one Pattern C template per dep (`templates/<dep>.yaml`) and wires the main workload HelmRelease's `values` / `valuesFrom` against `$DEP_CONTRACT.secretTemplates` and `$DEP_CONTRACT.serviceTemplates` substituted with the CR's own name.
 
 ### Pattern A — In-chart operator CR (system-style)
 
-The app chart creates the operator CR itself (e.g., a CNPG `Cluster` or Spotahome `RedisFailover`) instead of a cozystack-level sibling CR. The app chart owns both the CR and its output Secret. No separate dashboard entity for the dependency.
+The app chart creates the operator CR itself (e.g., CNPG `Cluster`, Spotahome `RedisFailover`) and owns both the CR and its output Secret. No separate dashboard entity for the dep. Use when a cozystack ApplicationDefinition for the dep is unavailable, or when the app is explicitly system-scoped (harbor, keycloak). For tenant-facing external apps, prefer Pattern C.
 
-Use Pattern A only when a Pattern C sibling does not exist for the dependency, or when the app is explicitly system-scoped (like cozystack's own `harbor` or `keycloak`, which predate the sibling-CR pattern). For tenant-facing external apps, prefer Pattern C.
-
-#### Step 1 — Research the dependency (mandatory)
-
-Before asking the user for spec values, consult the **Dependency catalog** (appendix at the bottom of this skill). For each Pattern A dependency, record four facts:
-
-1. **CR identity**: `apiVersion` and `kind` of the resource the chart will create (e.g., `postgresql.cnpg.io/v1 Cluster`, `databases.spotahome.com/v1 RedisFailover`).
-2. **Output Secret** — who creates it (operator or chart), its name template, and its keys.
-3. **CR ↔ Secret wiring** — whether the CR auto-produces the Secret (CNPG), or the chart must create the Secret and point the CR at it (RedisFailover `auth.secretPath`).
-4. **App-side consumption** — env via `secretKeyRef`, volume mount, or config file.
-
-If the dependency is in the catalog, copy its facts into the conversation so later phases can refer to them. If it is not, run the research procedure described in the catalog appendix before proceeding. **Never invent CR shapes, secret names, or secret keys.** When research is inconclusive, stop and ask the user.
-
-#### Step 2 — Collect spec values
-
-The values to collect depend on the CR, not on a generic list. Use the fields exposed by the CR spec as recorded in Step 1. Common groupings:
-
-- postgres (CNPG `Cluster`): database name, database user, replicas (default `2`), storage size (default `5Gi`).
-- redis (Spotahome `RedisFailover`): replicas (default `3`), storage size (default `2Gi`), password source (random generated or user-supplied via `values.yaml`).
-- mongodb (Percona `PerconaServerMongoDB`): replica-set size, storage size, users to seed.
-- Other deps: consult the CR schema captured in Step 1.
-
-#### Step 3 — Collect env mapping
-
-Use the Secret name and keys recorded in Step 1 — not a hardcoded list. For every environment variable the app expects, record which Secret key it maps to. Ask the user to confirm the app's expected env names.
-
-Example for postgres via CNPG (Secret `{{ .Release.Name }}-db-app`, keys `host`, `port`, `username`, `password`, `dbname`):
-
-```yaml
-DB_HOST:     secretKeyRef → {{ .Release.Name }}-db-app → host
-DB_PORT:     secretKeyRef → {{ .Release.Name }}-db-app → port
-DB_USERNAME: secretKeyRef → {{ .Release.Name }}-db-app → username
-DB_PASSWORD: secretKeyRef → {{ .Release.Name }}-db-app → password
-DB_NAME:     secretKeyRef → {{ .Release.Name }}-db-app → dbname
-```
-
-Example for redis via Spotahome (chart-created Secret `{{ .Release.Name }}-redis-auth`, key `password`):
-
-```yaml
-REDIS_HOST:     value → rfs-{{ .Release.Name }}-redis     # sentinel service from RedisFailover
-REDIS_PORT:     value → "26379"
-REDIS_PASSWORD: secretKeyRef → {{ .Release.Name }}-redis-auth → password
-```
-
-If the app expects a compound value (`DATABASE_URL`, `REDIS_URL`, etc.), note the assembly pattern — it usually needs a Helm template expression, not a direct `secretKeyRef`.
+Pattern A still requires research: the operator CR shape and its Secret/Service output convention are operator-specific. The **Pattern A catalog** appendix records the verified shapes for CNPG and Spotahome. For any operator not in that catalog, follow the research procedure in the appendix before writing Phase 7 templates.
 
 ### Pattern B — External reference
 
-The app expects a pre-existing service. The user provisions it separately (e.g., via the Cozystack dashboard postgres app) and passes connection details as values.
+The app expects a pre-existing service. The user provisions it separately and passes connection details as values — typically `postgres.host`, `postgres.port`, `postgres.secretName`. The app chart does not provision anything. Collect which values.yaml fields to expose and how the app consumes them (env vars, config mount).
 
-Collect:
-- Which values.yaml fields to expose (e.g., `postgres.host`, `postgres.port`, `postgres.secretName`)
-- How the app consumes them (env vars, config file mount, etc.)
+### Step 4 — Collect spec values
 
-Present a summary of all dependencies with chosen patterns. Proceed only after user confirms.
+Drive field selection from `$DEP_CONTRACT.specSchema` (Pattern C) or from the operator CR schema researched for Pattern A — not a hand-picked list. For Pattern C postgres, `specSchema` declares `size`, `replicas`, `users`, `databases`, `external`, `storageClass`, etc.; collect defaults for each the user expects to expose. For Pattern B, the values schema is whatever the user and the app agree on.
+
+### Step 5 — Record wiring mapping
+
+The shape of the wiring record depends on chart source:
+
+- **Upstream chart (`$CHART_SOURCE = upstream`)**: record a list of `{targetPath, source}` entries. `targetPath` is one of the value paths surfaced in Step 1; `source` is either an inline value (e.g., the Service hostname) or a `valuesFrom` reference using `$DEP_CONTRACT.secretTemplates` + the CR's name.
+
+  Example for Gitea + Pattern C postgres (CR named `{{ .Release.Name }}-db`, contract prefix `postgres-`, secret template `postgres-{{ .name }}-credentials`):
+
+  ```yaml
+  values:
+    gitea:
+      config:
+        database:
+          DB_TYPE: postgres
+          HOST: postgres-{{ .Release.Name }}-db-rw:5432   # from $DEP_CONTRACT.serviceTemplates
+          NAME: {{ .Values.database.name }}
+          USER: {{ .Values.database.user }}
+  valuesFrom:
+    - kind: Secret
+      name: postgres-{{ .Release.Name }}-db-credentials   # from $DEP_CONTRACT.secretTemplates
+      valuesKey: {{ .Values.database.user }}              # see Secret key convention per catalog entry
+      targetPath: gitea.config.database.PASSWD
+  ```
+
+- **Custom chart (`$CHART_SOURCE = custom`)**: record container env entries. `valueFrom.secretKeyRef` targets `$DEP_CONTRACT.secretTemplates` (Pattern C) or the operator's output Secret (Pattern A). Inline values come from services or helm expressions.
+
+Present a single summary table of all dependencies with: name, chosen pattern, resolved kind, resolved secret/service, wiring targets. Proceed only after user confirms.
 
 ## Phase 5 — Register upstream Helm chart sources (conditional)
 
