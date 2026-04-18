@@ -99,7 +99,12 @@ Present a summary of all dependencies with chosen patterns. Proceed only after u
 
 Skip if `--operator` was not passed and the app does not need a custom operator.
 
-If an operator is needed, create `packages/system/$APP_NAME-operator/`:
+If an operator is needed, use `AskUserQuestion` to collect, from the repository at `$OPERATOR_REPO_URL`:
+
+- `$OPERATOR_CHART_NAME` — chart name inside the repository (e.g., `immich`).
+- `$OPERATOR_CHART_VERSION` — pinned chart version (e.g., `0.9.4`). Never use `latest` — the Makefile requires a fixed version for reproducible builds.
+
+Then create `packages/system/$APP_NAME-operator/`:
 
 ```bash
 mkdir -p $REPO_DIR/packages/system/$APP_NAME-operator/charts
