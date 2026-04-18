@@ -788,19 +788,13 @@ If `$PLAN_APPROVED` was set in Phase 5.5, write the templates directly. Otherwis
 
 Update five files under `packages/core/platform/templates/`. Read each file first, then append.
 
-Before generating any YAML in this phase, extract the GitRepository name from `init.yaml` — it is referenced as `sourceRef.name` in both the operator HelmRelease and the ApplicationDefinition below:
+Before generating any YAML in this phase, extract the GitRepository name from `init.yaml` — it is referenced as `sourceRef.name` in both the operator HelmRelease and the ApplicationDefinition below. Always select by kind so multi-document `init.yaml` files (the reference layout has both a `GitRepository` and a `HelmRelease`, often sharing a name by coincidence) resolve deterministically:
 
 ```bash
-GIT_REPO_NAME=$(yq -r '.metadata.name' $REPO_DIR/init.yaml | head -1)
+GIT_REPO_NAME=$(yq -r 'select(.kind == "GitRepository") | .metadata.name' $REPO_DIR/init.yaml)
 ```
 
-If `init.yaml` contains multiple documents, pick the `GitRepository` kind explicitly:
-
-```bash
-GIT_REPO_NAME=$(yq -r 'select(.kind == "GitRepository") | .metadata.name' $REPO_DIR/init.yaml | head -1)
-```
-
-Stop and ask the user if the extracted value is empty.
+Stop and ask the user if the extracted value is empty or if the selector returns more than one GitRepository.
 
 ### namespaces.yaml
 
