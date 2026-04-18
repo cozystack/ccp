@@ -58,23 +58,36 @@ If `--depends-on` was not passed, use `AskUserQuestion`: "Does this app need any
 
 For each dependency, determine the **integration pattern** via `AskUserQuestion`:
 
-### Pattern A — Managed provisioning (recommended for postgres)
+### Pattern A — Managed provisioning (in-chart)
 
-The app chart creates the backing service itself (e.g., a CNPG `Cluster` CR in its own templates). The app chart owns the lifecycle.
+The app chart creates the backing service itself (a CR for the operator running in the cluster) and wires the resulting credentials into the app container. The app chart owns the lifecycle of both the CR and the Secret that the app reads.
 
-Collect:
-- Database name (default: `app`)
-- Database user (default: `app`)
-- Number of replicas (default: `2`)
-- Storage size (default: `5Gi`)
+#### Step 1 — Research the dependency (mandatory)
 
-**CNPG secret convention** (verified from cozystack harbor/keycloak):
-- Cluster named `{{ .Release.Name }}-db` creates:
-  - Service: `{{ .Release.Name }}-db-rw` (read-write), `{{ .Release.Name }}-db-r` (read-only)
-  - Secret: `{{ .Release.Name }}-db-app` with keys: `host`, `port`, `username`, `password`, `dbname`
-  - Secret: `{{ .Release.Name }}-db-superuser` with superuser credentials
+Before asking the user for spec values, consult the **Dependency catalog** (appendix at the bottom of this skill). For each Pattern A dependency, record four facts:
 
-Collect the env variable mapping for the app container. Defaults:
+1. **CR identity**: `apiVersion` and `kind` of the resource the chart will create (e.g., `postgresql.cnpg.io/v1 Cluster`, `databases.spotahome.com/v1 RedisFailover`).
+2. **Output Secret** — who creates it (operator or chart), its name template, and its keys.
+3. **CR ↔ Secret wiring** — whether the CR auto-produces the Secret (CNPG), or the chart must create the Secret and point the CR at it (RedisFailover `auth.secretPath`).
+4. **App-side consumption** — env via `secretKeyRef`, volume mount, or config file.
+
+If the dependency is in the catalog, copy its facts into the conversation so later phases can refer to them. If it is not, run the research procedure described in the catalog appendix before proceeding. **Never invent CR shapes, secret names, or secret keys.** When research is inconclusive, stop and ask the user.
+
+#### Step 2 — Collect spec values
+
+The values to collect depend on the CR, not on a generic list. Use the fields exposed by the CR spec as recorded in Step 1. Common groupings:
+
+- postgres (CNPG `Cluster`): database name, database user, replicas (default `2`), storage size (default `5Gi`).
+- redis (Spotahome `RedisFailover`): replicas (default `3`), storage size (default `2Gi`), password source (random generated or user-supplied via `values.yaml`).
+- mongodb (Percona `PerconaServerMongoDB`): replica-set size, storage size, users to seed.
+- Other deps: consult the CR schema captured in Step 1.
+
+#### Step 3 — Collect env mapping
+
+Use the Secret name and keys recorded in Step 1 — not a hardcoded list. For every environment variable the app expects, record which Secret key it maps to. Ask the user to confirm the app's expected env names.
+
+Example for postgres via CNPG (Secret `{{ .Release.Name }}-db-app`, keys `host`, `port`, `username`, `password`, `dbname`):
+
 ```yaml
 DB_HOST:     secretKeyRef → {{ .Release.Name }}-db-app → host
 DB_PORT:     secretKeyRef → {{ .Release.Name }}-db-app → port
@@ -83,7 +96,15 @@ DB_PASSWORD: secretKeyRef → {{ .Release.Name }}-db-app → password
 DB_NAME:     secretKeyRef → {{ .Release.Name }}-db-app → dbname
 ```
 
-Ask the user if these env names are correct for their app, or if the app expects different names (e.g., `DATABASE_URL`, `PGHOST`, `POSTGRES_PASSWORD`).
+Example for redis via Spotahome (chart-created Secret `{{ .Release.Name }}-redis-auth`, key `password`):
+
+```yaml
+REDIS_HOST:     value → rfs-{{ .Release.Name }}-redis     # sentinel service from RedisFailover
+REDIS_PORT:     value → "26379"
+REDIS_PASSWORD: secretKeyRef → {{ .Release.Name }}-redis-auth → password
+```
+
+If the app expects a compound value (`DATABASE_URL`, `REDIS_URL`, etc.), note the assembly pattern — it usually needs a Helm template expression, not a direct `secretKeyRef`.
 
 ### Pattern B — External reference
 
