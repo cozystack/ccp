@@ -59,11 +59,39 @@ Record all answers. Proceed only after user confirms the summary.
 
 If `--depends-on` was not passed, use `AskUserQuestion`: "Does this app need any backing services (e.g., postgres, redis, mongodb)? List them or say 'none'."
 
-For each dependency, determine the **integration pattern** via `AskUserQuestion`:
+For each dependency, determine the **integration pattern** via `AskUserQuestion`. Three patterns exist — the recommended default for external apps is **Pattern C**.
 
-### Pattern A — Managed provisioning (in-chart)
+### Pattern C — Sibling Cozystack ApplicationDefinition (recommended for external apps)
 
-The app chart creates the backing service itself (a CR for the operator running in the cluster) and wires the resulting credentials into the app container. The app chart owns the lifecycle of both the CR and the Secret that the app reads.
+The app chart creates a **cozystack-level CR** (e.g., `Redis`, `Postgres`, `MariaDB`, `Kafka`) in its own templates. The cozystack controller then reconciles that CR into a HelmRelease which deploys the corresponding `packages/apps/<dep>/` chart — the same chart dashboard users invoke when they deploy Redis/Postgres manually.
+
+Why this is the default for external apps:
+
+- Every sibling instance appears in the dashboard as a first-class entity. A tenant can list, inspect, back up, and restore it independently of the app.
+- WorkloadMonitor, PodMonitor, backup schedules, and migration logic shipped by cozystack's own `apps/<dep>/` chart apply automatically — none of that needs to be re-implemented per app.
+- Upgrading cozystack itself upgrades the dependency wiring for every consumer at once.
+
+Before collecting spec values, research the sibling ApplicationDefinition (see **Dependency catalog Pattern C** appendix). Each entry records the three facts the app chart needs to wire an instance correctly:
+
+1. **Prefix** — cozystack controller prepends this to the CR name when rendering the downstream HelmRelease. E.g., `Redis/foo` → HelmRelease `redis-foo`.
+2. **Credentials Secret name template** — where the downstream chart exposes passwords. E.g., `postgres-{{ .name }}-credentials`, `redis-{{ .name }}-auth`.
+3. **Services** — which Service names the downstream chart creates. E.g., `postgres-<name>-rw`, `rfs-redis-<name>`.
+
+These contracts are declared in `packages/system/<dep>-rd/cozyrds/<dep>.yaml` under `spec.secrets.include.resourceNames` and `spec.services.include.resourceNames` — authoritative per cozystack version.
+
+In Phase 7 the app chart emits one Pattern C CR per dependency (template `<dep>.yaml`), mapping chart values onto the CR's spec. The main workload HelmRelease (see Phase 7 Main workload) then references the downstream-emitted Secret via `valuesFrom` and targets the downstream Service via `values`.
+
+Spec parameters to collect depend on the sibling CR's own `openAPISchema`. Common fields:
+
+- `Postgres`: `size`, `replicas`, `users` (map of `<username>: password: <pw>`), `databases` (map of `<dbname>: roles: { admin: [users] }`).
+- `Redis`: `size`, `replicas`, `authEnabled` (default `true`), `storageClass`.
+- `MariaDB`, `MongoDB`, `Kafka`, `ClickHouse`: consult their ApplicationDefinition under `packages/system/<dep>-rd/cozyrds/<dep>.yaml`.
+
+### Pattern A — In-chart operator CR (system-style)
+
+The app chart creates the operator CR itself (e.g., a CNPG `Cluster` or Spotahome `RedisFailover`) instead of a cozystack-level sibling CR. The app chart owns both the CR and its output Secret. No separate dashboard entity for the dependency.
+
+Use Pattern A only when a Pattern C sibling does not exist for the dependency, or when the app is explicitly system-scoped (like cozystack's own `harbor` or `keycloak`, which predate the sibling-CR pattern). For tenant-facing external apps, prefer Pattern C.
 
 #### Step 1 — Research the dependency (mandatory)
 
