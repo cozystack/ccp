@@ -449,6 +449,20 @@ Use `AskUserQuestion` to confirm the generated templates before writing them. Sh
 
 Update three files under `packages/core/platform/templates/`. Read each file first, then append.
 
+Before generating any YAML in this phase, extract the GitRepository name from `init.yaml` — it is referenced as `sourceRef.name` in both the operator HelmRelease and the CozystackResourceDefinition below:
+
+```bash
+GIT_REPO_NAME=$(yq -r '.metadata.name' $REPO_DIR/init.yaml | head -1)
+```
+
+If `init.yaml` contains multiple documents, pick the `GitRepository` kind explicitly:
+
+```bash
+GIT_REPO_NAME=$(yq -r 'select(.kind == "GitRepository") | .metadata.name' $REPO_DIR/init.yaml | head -1)
+```
+
+Stop and ask the user if the extracted value is empty.
+
 ### namespaces.yaml
 
 If an operator was created (Phase 5), append:
@@ -482,14 +496,9 @@ spec:
       chart: ./packages/system/$APP_NAME-operator
       sourceRef:
         kind: GitRepository
-        name: external-apps
+        name: $GIT_REPO_NAME
         namespace: cozy-public
       version: '*'
-```
-
-Verify the `sourceRef.name` matches the GitRepository name in `init.yaml`. Read `init.yaml` to extract it:
-```bash
-yq -r '.metadata.name' $REPO_DIR/init.yaml | head -1
 ```
 
 If the app chart itself has a **Pattern A postgres dependency** and an operator is also present, add `spec.dependsOn` to the app's HelmRelease to ensure the operator is ready:
