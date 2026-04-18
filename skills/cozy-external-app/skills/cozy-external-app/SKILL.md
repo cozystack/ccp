@@ -219,6 +219,68 @@ For each source needed, use `AskUserQuestion` to collect:
 
 No files are created in this phase. All source and release resources are written in Phase 8 alongside the other platform resources.
 
+## Phase 5.5 — Present plan
+
+Before any file is written, assemble every decision gathered so far into a single plan and present it to the user once. This is the gate — after approval, Phases 6–8 proceed without further prompts (except critical ones, e.g., existing-file collision). Without this consolidated view, the user never sees the whole picture until files start appearing on disk.
+
+Build a plan document with five sections:
+
+1. **App summary** — `$APP_NAME`, Kind, Plural, dashboard metadata (Display Name, Description, Category, Tags), icon status (supplied / placeholder).
+2. **Chart source** — `$CHART_SOURCE` (`upstream` or `custom`). For `upstream`, include `$SOURCE_REPO_URL`, chart name, version. For `custom`, note "no upstream wrapper, templates authored from scratch".
+3. **Contract source** — which of `local` / `github` / `cluster` was used in Phase 4 Step 2 (`$COZYSTACK_CONTRACT_SOURCE`). Flag if cozystack `main` was used vs. a pinned version.
+4. **Files to create / modify** — explicit path list, grouped:
+   - `packages/apps/$APP_NAME/Chart.yaml`, `Makefile`, `values.yaml`, `values.schema.json`, `README.md`, `.helmignore`, `logos/$APP_NAME.svg`.
+   - `packages/apps/$APP_NAME/templates/<dep>.yaml` per Pattern C/A dependency (e.g., `postgres.yaml`, `redis.yaml`).
+   - `packages/apps/$APP_NAME/templates/$APP_NAME.yaml` (HelmRelease wrapper or Deployment).
+   - `packages/core/platform/templates/{namespaces,helmrepositories,helmreleases,helmcharts,cozyrds}.yaml` — only the ones that actually get modified, with the specific entry each receives.
+5. **Dependency wiring table** — for every dep, one row: chosen pattern, resolved kind, CR name template, output Secret template + key, output Service + port, upstream chart `targetPath` (for HelmRelease wrapper) or container env name (for custom chart). This is the table from Phase 4 Step 5, restated for the approval gate.
+
+Also list any **open items** explicitly: missing icon, missing upstream chart version, skipped dependency pattern, unresolved `$DEP_CONTRACT`. The user should not be surprised later.
+
+Example for `/cozy-external-app gitea`:
+
+```text
+App              : gitea (Kind: Gitea, Plural: giteas)
+Dashboard        : "Gitea" / "Self-hosted Git service" / Developer tools / git, vcs
+Chart source     : upstream — https://dl.gitea.com/charts gitea@12.0.1 (HelmRelease wrapper)
+Contract source  : local ($COZYSTACK_REPO=/Users/kitsunoff/git/github.com/cozystack/cozystack)
+
+Create (packages/apps/gitea/):
+  Chart.yaml, Makefile, values.yaml, values.schema.json, README.md, .helmignore
+  logos/gitea.svg                 ⚠ placeholder — supply real SVG before make generate
+  templates/postgres.yaml         Pattern C → apps.cozystack.io/v1alpha1 Postgres
+  templates/redis.yaml            Pattern C → apps.cozystack.io/v1alpha1 Redis
+  templates/gitea.yaml            HelmRelease wrapping gitea/gitea:12.0.1
+
+Modify (packages/core/platform/templates/):
+  namespaces.yaml                 +1 entry: external-gitea
+  helmrepositories.yaml           +1 entry: gitea → dl.gitea.com/charts  (namespace: external-gitea)
+  helmcharts.yaml                 +1 entry: external-apps-gitea → ./packages/apps/gitea  (namespace: cozy-public)
+  cozyrds.yaml                    +1 ApplicationDefinition: gitea (kind Gitea)
+
+Dependencies:
+  postgres  Pattern C  Postgres/{{ .Release.Name }}-db
+            Secret postgres-{{ .Release.Name }}-db-credentials  key=gitea   → gitea.config.database.PASSWD
+            Service postgres-{{ .Release.Name }}-db-rw:5432                 → gitea.config.database.HOST
+
+  redis     Pattern C  Redis/{{ .Release.Name }}-redis
+            Secret redis-{{ .Release.Name }}-redis-auth         key=password → gitea.config.cache.PASSWORD
+            Service rfs-redis-{{ .Release.Name }}-redis:26379              → gitea.config.cache.HOST (sentinel URL)
+
+Subcharts disabled in upstream values: postgresql-ha, redis-cluster
+
+Open items:
+  - Icon not supplied; placeholder will be written. Phase 9 validation will fail until an SVG is placed.
+```
+
+Use `AskUserQuestion` with three options:
+
+- `approve` — record `$PLAN_APPROVED = true`, proceed to Phase 6 without per-phase confirmations.
+- `edit` — ask which phase to revisit (3 for app metadata, 4 for dependencies, 5 for chart sources), then re-run from there and re-present the plan.
+- `abort` — stop. No files are written.
+
+Record `$PLAN_APPROVED` state; Phases 6, 7, and 8 read it to decide whether to skip their individual write-time confirmations.
+
 ## Phase 6 — Create app chart skeleton
 
 Create `packages/apps/$APP_NAME/` with these files:
@@ -678,7 +740,7 @@ spec:
 {{- end }}
 ```
 
-Use `AskUserQuestion` to confirm the generated templates before writing them. Show a summary of what will be created.
+If `$PLAN_APPROVED` was set in Phase 5.5, write the templates directly. Otherwise use `AskUserQuestion` to confirm the generated templates before writing them and show a summary of what will be created.
 
 ## Phase 8 — Register in core/platform
 
@@ -847,7 +909,7 @@ sed 's/^/      /' $REPO_DIR/packages/apps/$APP_NAME/values.schema.json
 
 Verify the final YAML with `yq e '.' cozyrds.yaml > /dev/null` before moving on — an off-by-one indentation silently breaks the schema.
 
-Use `AskUserQuestion` to confirm all core/platform changes before writing. Show the diff of what will be appended to each file.
+If `$PLAN_APPROVED` was set in Phase 5.5, write the platform-level additions directly. Otherwise use `AskUserQuestion` to confirm all core/platform changes before writing and show the diff of what will be appended to each file.
 
 ## Phase 9 — Validation
 
@@ -1105,7 +1167,7 @@ Unlike CNPG, the Spotahome operator does NOT emit connection details. The chart 
 - **Never** copy the postgres/CNPG wiring onto a different dependency. CNPG auto-creates the credentials Secret; Spotahome RedisFailover does not (the chart creates it). Other operators differ further — always verify.
 - **Never** edit files in a cozystack checkout used as reference — those are read-only.
 - **Never** modify `init.yaml` — the user manages their GitRepository and root HelmRelease manually.
-- **Always** use `AskUserQuestion` before creating files in Phase 6, 7, and 8. Show what will be created.
+- **Always** gate file creation behind user confirmation. The consolidated gate is Phase 5.5 (Present plan); once `$PLAN_APPROVED` is set, Phases 6-8 proceed without further prompts. If Phase 5.5 was skipped or the plan was not approved, fall back to per-phase `AskUserQuestion` confirmations in Phases 6, 7, and 8.
 - **Always** read existing files before appending to them (`namespaces.yaml`, `helmrepositories.yaml`, `helmreleases.yaml`, `helmcharts.yaml`, `cozyrds.yaml`).
 - If `cozyvalues-gen` is not installed, do not attempt to generate schema/README manually beyond a minimal placeholder. Tell the user to install it and re-run `make generate`.
 
