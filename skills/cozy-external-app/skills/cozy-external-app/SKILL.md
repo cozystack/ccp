@@ -512,7 +512,9 @@ spec:
 
 ### cozyrds.yaml
 
-Append a `ApplicationDefinition` for the app. The `openAPISchema` must match `values.schema.json` content.
+Append an `ApplicationDefinition` for the app. The `openAPISchema` must match `values.schema.json` content.
+
+`ApplicationDefinition` is cluster-scoped (`scope: Cluster` in the CRD), so `metadata.namespace` must be omitted. The `release.chartRef` field references the flux `HelmChart` defined in `helmcharts.yaml` above — both must use the same name and namespace (`cozy-public`).
 
 ```yaml
 ---
@@ -520,7 +522,6 @@ apiVersion: cozystack.io/v1alpha1
 kind: ApplicationDefinition
 metadata:
   name: $APP_NAME
-  namespace: cozy-system
 spec:
   application:
     kind: $APP_KIND
@@ -529,12 +530,10 @@ spec:
     plural: $APP_PLURAL
     singular: $APP_NAME
   release:
-    chart:
-      name: ./packages/apps/$APP_NAME
-      sourceRef:
-        kind: GitRepository
-        name: $GIT_REPO_NAME
-        namespace: cozy-public
+    chartRef:
+      kind: HelmChart
+      name: $GIT_REPO_NAME-$APP_NAME
+      namespace: cozy-public
     labels:
       cozystack.io/ui: "true"
     prefix: $APP_NAME-
@@ -546,6 +545,18 @@ spec:
     tags:
       - $TAG1
     icon: $ICON_B64
+    keysOrder:
+      - - apiVersion
+      - - kind
+      - - metadata
+      - - metadata
+        - name
+      # Append one entry per top-level key in values.yaml, in the order the
+      # user should see them in the dashboard form. Example:
+      # - - spec
+      #   - host
+      # - - spec
+      #   - size
 ```
 
 To compute `$ICON_B64`:
