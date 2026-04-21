@@ -12,6 +12,12 @@
       "description": "Deploy a Cozystack package to a dev cluster via make + cozyhr — handles fresh install and dev-loop iteration with ExternalArtifact support",
       "source": "./skills/cozy-deploy",
       "category": "infrastructure"
+    },
+    {
+      "name": "drbd-recovery",
+      "description": "Diagnose and recover DRBD/LINSTOR storage issues in Kubernetes clusters — handles StandAlone, DELETING, Inconsistent, Diskless, quorum loss, bitmap errors, and other common failure modes",
+      "source": "./skills/drbd-recovery",
+      "category": "infrastructure"
     }
   ]
 }
