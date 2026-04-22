@@ -26,7 +26,7 @@ Specialized skill for diagnosing and recovering DRBD/LINSTOR storage issues in K
 5. **If SyncTarget is progressing, stop.** A resource that entered sync is already recovering. Don't interfere.
 6. **Every action should simplify the graph.** Remove peers from conflict, reduce topology complexity. If an action creates new noise, don't do it.
 7. **Check error-reports for the real cause.** What looks like StandAlone may actually be an `adjust` failure underneath.
-8. **ASK the user before dangerous operations.** Always ask for explicit confirmation before: `linstor node lost`, force-deleting the last replica, `drbdadm down` on InUse/Primary resource, `--discard-my-data` when only one diskful copy remains.
+8. **ASK the user before dangerous operations.** Always ask for explicit confirmation before: `linstor node lost`, deleting the last replica, `drbdadm down` on InUse/Primary resource, `--discard-my-data` when only one diskful copy remains, `drbdadm create-md --force` (wipes DRBD metadata and triggers a full resync).
 
 ## Diagnostic Steps
 
@@ -87,7 +87,7 @@ IMPORTANT: If `drbdadm status` answers `No such resource`, the DRBD object is go
 
 ## Recovery Decision Tree
 
-```
+```text
 Is the resource in Unknown state?
 ├─ YES: Node is likely OFFLINE. Check `linstor n l`.
 │  └─ If node is alive but satellite down: fix satellite first
@@ -122,6 +122,9 @@ StandAlone means DRBD detected data inconsistency between peers. The standard fi
 
 **On the StandAlone (secondary/outdated) side:**
 ```bash
+# Demote first if the node happens to be Primary — `connect --discard-my-data`
+# refuses to run on a Primary resource.
+drbdadm secondary --force <resource>
 drbdadm disconnect <resource>
 drbdadm connect --discard-my-data <resource>
 ```
@@ -169,25 +172,6 @@ linstor r d <deleting-node> <resource>
 linstor r c <deleting-node> <resource>        # convert from DELETING
 linstor r td --diskless <deleting-node> <resource>  # clean toggle
 ```
-
-### Method 3: Force-delete (if patched)
-If the force-delete patch is deployed:
-
-**BEFORE force-delete:**
-1. Run `linstor r l -r <resource>` — confirm at least one UpToDate diskful replica exists on ANOTHER node
-2. If this is the last diskful replica — **STOP and ask the user**
-3. Check if PVC is still Bound: `kubectl get pv <resource>` — if Bound and this is among the last replicas, **ask the user**
-
-```bash
-linstor r sp <node> <resource> Aux/force-delete true
-linstor r d <node> <resource>
-```
-After force-delete, rename the orphaned ZFS volume:
-```bash
-# On the node:
-zfs rename data/<resource>_00000 data/<resource>_00000_FIX_TODO_REMOVE
-```
-WARNING: Force-delete can trigger CSI to delete the ResourceDefinition if all resources become flagged. Never force-delete the last replicas without asking the user first.
 
 ## Fix: Inconsistent Replica Blocking Others
 
@@ -295,7 +279,7 @@ If device is `suspended:user` + `open:yes` with no holder process — only a nod
 
 ## Fix: False Diskless (LINSTOR says Diskless, DRBD is diskful)
 
-This happens after force-delete removes CRD but satellite keeps DRBD running.
+This happens when LINSTOR's view of the replica has been cleared but the satellite keeps DRBD running (e.g., after a failed deletion).
 
 ```bash
 # Verify ZFS volume exists:
@@ -348,7 +332,7 @@ linstor r act <node> <resource>
 ## Mass Incident Recovery Procedure
 
 1. **Remove taints** if blocking pod scheduling: `kubectl taint node <node> drbd.linbit.com/lost-quorum-`
-2. **Fix DELETING first** — they block other operations. Use deact+delete or force-delete.
+2. **Fix DELETING first** — they block other operations. Use deact+delete or convert+toggle-disk.
 3. **Fix StandAlone** — `disconnect` + `connect --discard-my-data` on secondary side, normal `connect` on primary side.
 4. **Fix Connecting** — check error-reports, fix underlying cause (bitmap, port, peer down).
 5. **Fix Inconsistent/Outdated** — should auto-sync once connections restored. If stuck, reconnect.
@@ -366,9 +350,8 @@ Prioritize by presence of UpToDate replicas: resources with zero UpToDate copies
 - **Never treat every `DELETING` as something to immediately destroy** — some are mid-cleanup
 - **Never try `drbdadm` commands on a resource that doesn't exist locally** — fix LINSTOR metadata instead
 - **Never assume `Diskless` in LINSTOR means no data** — check ZFS and DRBD on the node
-- **Never force-delete the last replica without cloning ZFS first**
 - **Never use `linstor node lost`** — ask the user instead, this is too destructive for automated use
-- **Never perform destructive operations (force-delete, discard-my-data, down on InUse) without asking the user for confirmation first**
+- **Never perform destructive operations (discard-my-data, down on InUse, create-md --force) without asking the user for confirmation first**
 
 ## Known Upstream Bugs
 
@@ -376,4 +359,4 @@ Prioritize by presence of UpToDate replicas: resources with zero UpToDate copies
 2. **ConfFileBuilder uses stale Resource flags** instead of DrbdRscData flags — generates `disk none` for diskful peers. Fix: PR #490.
 3. **Toggle-disk doesn't preserve TCP ports** — `removeLayerData` frees ports, `ensureStackDataExists` allocates different ones. Fix: PR #476.
 4. **CSI can delete ResourceDefinition while PVC is Bound** — if all resources have FlagDelete, CSI removes RD. Fix: linstor-csi PR #429.
-5. **Talos TCP sysctl defaults** — `tcp_orphan_retries=0` causes connection floods under DRBD load. Fix: set `tcp_orphan_retries=3`, `tcp_fin_timeout=30`, `netdev_max_backlog=5000`.
+5. **TCP sysctl defaults under DRBD churn** — Linux kernel's default `tcp_orphan_retries` produces excessive orphan-socket retries under DRBD load. On most distributions the sysctl reads `0`, which the kernel internally substitutes with `8`; some distros (Ubuntu, Debian) also expose it as `8` directly. Talos inherits this default unchanged. Fix: set `tcp_orphan_retries=3`, `tcp_fin_timeout=30`, `netdev_max_backlog=5000`.
