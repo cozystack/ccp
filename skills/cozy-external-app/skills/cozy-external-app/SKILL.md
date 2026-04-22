@@ -101,7 +101,7 @@ Present the table to the user via `AskUserQuestion`: "Detected these dependencie
 
 For each dependency from Step 1, resolve a `$DEP_CONTRACT` from cozystack. Try these sources in order; stop at the first success:
 
-1. **Local cozystack checkout** — when `$COZYSTACK_REPO` is set (or detectable as a sibling dir of `$REPO_DIR`). Read:
+1. **Local cozystack checkout** — when `$COZYSTACK_REPO` is set. Read:
 
    ```bash
    cat $COZYSTACK_REPO/packages/system/<dep>-rd/cozyrds/<dep>.yaml
@@ -423,7 +423,7 @@ postgres:
 
 Generate via:
 ```bash
-cd $REPO_DIR/packages/apps/$APP_NAME && cozyvalues-gen -v values.yaml -s values.schema.json -r README.md
+cd $REPO_DIR/packages/apps/$APP_NAME && cozyvalues-gen --values values.yaml --schema values.schema.json --readme README.md
 ```
 
 If `cozyvalues-gen` fails, write a minimal valid JSON schema manually based on values.yaml fields. Verify with:
@@ -453,6 +453,8 @@ Generate the primary workload template. If Phase 3 recorded `$CHART_SOURCE = ups
 
 The HelmRelease registered below references the `HelmRepository` created in Phase 8 and injects cozystack-wired connection details via `values` and `valuesFrom`. `valuesFrom` is the cleanest way to pipe a password out of a Secret created by a Pattern C sibling CR (see Phase 4 Pattern C, Dependency catalog appendix) directly into the upstream chart's value path — no Deployment env rewriting required.
 
+The example below shows a Gitea-like app with **both** postgres and redis resolved in Phase 4. Treat it as an illustration, not a template to copy verbatim: emit a `dependsOn` entry and a `values.<subchart>.enabled: false` line only for dependencies actually recorded in Phase 4 Step 1/Step 2. An app with postgres only must not carry the redis entries, and vice versa — an unrelated `dependsOn` target blocks reconciliation until it appears (or forever, if it never will).
+
 ```yaml
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -471,12 +473,17 @@ spec:
   # dependsOn ensures sibling cozystack CRs reconcile before this release tries to use their outputs.
   # Reference the generated HelmReleases (named `<dep-prefix><dep-cr-name>`) that cozystack controllers
   # produce from the Pattern C sibling CRs you emit in templates/postgres.yaml, templates/redis.yaml, etc.
+  # Emit one entry per dependency resolved in Phase 4 — drop these two lines for apps without that dep.
   dependsOn:
     - name: postgres-{{ .Release.Name }}-db
       namespace: {{ .Release.Namespace }}
     - name: redis-{{ .Release.Name }}-redis
       namespace: {{ .Release.Namespace }}
   # Disable the upstream chart's bundled subcharts — we provide backing services via Pattern C.
+  # Include only the subchart aliases that the upstream chart actually ships (discovered in
+  # Phase 4 Step 1 as `postgresql`, `postgresql-ha`, `redis`, `redis-cluster`, etc.). Emitting a
+  # toggle for a subchart the upstream does not declare is a no-op; emitting one for the *wrong*
+  # alias silently leaves the bundled subchart running.
   values:
     postgresql:    { enabled: false }
     postgresql-ha: { enabled: false }
@@ -495,6 +502,9 @@ spec:
         redis:
           host: rfs-redis-{{ .Release.Name }}-redis
           port: 26379
+          # "mymaster" is Spotahome RedisFailover's default sentinel monitor
+          # name; cozystack's packages/apps/redis does not override it. Change
+          # only if a future cozystack release documents a different default.
           sentinelMaster: mymaster
   # Secrets must be read at reconcile time — never inline passwords into values.
   valuesFrom:
@@ -817,7 +827,9 @@ Emit one entry for each `$SOURCE_NAMESPACE` gathered (deduplicate if operator an
 
 ### helmrepositories.yaml
 
-For every source gathered in Phase 5 (operator and/or main), append a `HelmRepository`:
+For every source gathered in Phase 5 (operator and/or main), append a `HelmRepository`. Emit exactly one of the two variants below based on `$SOURCE_REPO_TYPE` — do not leave commented lines in the output.
+
+**HTTPS source** (`$SOURCE_REPO_TYPE = https`):
 
 ```yaml
 ---
@@ -829,8 +841,21 @@ metadata:
 spec:
   interval: 5m
   url: $SOURCE_REPO_URL
-  # If $SOURCE_REPO_TYPE is `oci`, uncomment the next line:
-  # type: oci
+```
+
+**OCI source** (`$SOURCE_REPO_TYPE = oci`):
+
+```yaml
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: $SOURCE_REPO_NAME
+  namespace: $SOURCE_NAMESPACE
+spec:
+  interval: 5m
+  type: oci
+  url: $SOURCE_REPO_URL
 ```
 
 ### helmreleases.yaml
@@ -1126,6 +1151,9 @@ values:
       redis:
         host: rfs-redis-{{ .Release.Name }}-redis
         port: 26379
+        # Spotahome RedisFailover default sentinel monitor name, not overridden
+        # by cozystack's packages/apps/redis. See the note above in the main
+        # workload example.
         sentinelMaster: mymaster
 valuesFrom:
   - kind: Secret
