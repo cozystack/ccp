@@ -18,6 +18,12 @@
       "description": "Scaffold a new Cozystack external app package — generates chart skeleton, ApplicationDefinition, and handles dependency integration (e.g. Immich → Postgres) via managed CNPG clusters or external secret references",
       "source": "./skills/cozy-external-app",
       "category": "infrastructure"
+    },
+    {
+      "name": "drbd-recovery",
+      "description": "Diagnose and recover DRBD/LINSTOR storage issues in Kubernetes clusters — handles StandAlone, DELETING, Inconsistent, Diskless, quorum loss, bitmap errors, and other common failure modes",
+      "source": "./skills/drbd-recovery",
+      "category": "infrastructure"
     }
   ]
 }

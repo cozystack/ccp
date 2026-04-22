@@ -25,6 +25,7 @@ Install a plugin:
 | --- | --- |
 | **cozy-deploy** | Deploy a Cozystack package to a dev cluster via make + cozyhr |
 | **cozy-external-app** | Scaffold a new Cozystack external app package with dependency integration |
+| **drbd-recovery** | Diagnose and recover DRBD/LINSTOR storage issues in Kubernetes clusters |
 
 ## License
 
