@@ -55,8 +55,8 @@ Use `AskUserQuestion` to collect:
 2. **Container image**: image reference (e.g., `ghcr.io/immich-app/immich-server:v1.120.0`).
 3. **Public port**: does the app expose an HTTP port? If yes, which port number? Should an Ingress template be generated?
 4. **Persistent storage**: does the app need a PVC? If yes, default size (e.g., `10Gi`).
-5. **Icon**: path to an SVG file for the dashboard. If not available yet, note it — Phase 6 will create a `logos/` placeholder and Phase 9 will fail until the user provides one.
-6. **Dashboard metadata**: Display Name (e.g., `Immich`), Description (e.g., `Self-hosted photo and video management solution`), Category (e.g., `Media`), and Tags (comma-separated list, e.g., `photo, video`).
+5. **Icon**: path to an SVG file for the dashboard. If not available yet, note it — Phase 6 will create a `logos/` placeholder and Phase 8's `base64 < logos/$APP_NAME.svg` step will fail until the user provides one.
+6. **Dashboard metadata**: Display Name singular (e.g., `Immich`), Display Name plural (e.g., `Immichs` — do not infer automatically; apps like `MinIO`, `Nextcloud`, or `Gitea` read incorrectly when the singular is reused), Description (e.g., `Self-hosted photo and video management solution`), Category (e.g., `Media`), and Tags (comma-separated list, e.g., `photo, video`).
 7. **Resource definition**: Kind (e.g., `Immich`) and Plural (e.g., `immichs`) for the `ApplicationDefinition` created in Phase 8.
 
 Record all answers. Proceed only after user confirms the summary.
@@ -211,7 +211,7 @@ For each source needed, use `AskUserQuestion` to collect:
 
 - `$SOURCE_ROLE` — `main` (upstream chart for the app itself) or `operator` (dedicated operator chart).
 - `$SOURCE_REPO_URL` — repository URL. Prefix with `oci://` for OCI registries, otherwise use plain HTTPS.
-- `$SOURCE_REPO_TYPE` — `oci` if the URL starts with `oci://`, otherwise leave empty.
+- `$SOURCE_REPO_TYPE` — `oci` if the URL starts with `oci://`, otherwise `https`. Phase 8 selects the `HelmRepository` variant by this exact value.
 - `$SOURCE_CHART_NAME` — chart name inside the repository (e.g., `gitea`, `minecraft-operator`, `immich`).
 - `$SOURCE_CHART_VERSION` — pinned version or semver range (e.g., `12.0.1`, `>=1.0.0`). Avoid `'*'` in production use.
 - `$SOURCE_REPO_NAME` — alias used as `HelmRepository.metadata.name`. Default: `$APP_NAME` for `main`, `$APP_NAME-operator` for `operator`.
@@ -270,7 +270,7 @@ Dependencies:
 Subcharts disabled in upstream values: postgresql-ha, redis-cluster
 
 Open items:
-  - Icon not supplied; placeholder will be written. Phase 9 validation will fail until an SVG is placed.
+  - Icon not supplied; placeholder will be written. Phase 8 will fail on `base64 < logos/$APP_NAME.svg` until an SVG is placed — Phase 9 validation does not look at the icon itself.
 ```
 
 Use `AskUserQuestion` with three options:
@@ -497,8 +497,8 @@ spec:
         database:
           host: postgres-{{ .Release.Name }}-db-rw
           port: 5432
-          name: $APP_DB_NAME
-          user: $APP_DB_USER
+          name: {{ .Values.database.name }}
+          user: {{ .Values.database.user }}
         redis:
           host: rfs-redis-{{ .Release.Name }}-redis
           port: 26379
@@ -507,10 +507,13 @@ spec:
           # only if a future cozystack release documents a different default.
           sentinelMaster: mymaster
   # Secrets must be read at reconcile time — never inline passwords into values.
+  # valuesKey must match the Postgres CR's user name at runtime (the Postgres
+  # CR in templates/postgres.yaml keys its Secret by `.Values.database.user`),
+  # so both sides must read the same value — never bake a literal at generation.
   valuesFrom:
     - kind: Secret
       name: postgres-{{ .Release.Name }}-db-credentials
-      valuesKey: $APP_DB_USER
+      valuesKey: {{ .Values.database.user }}
       targetPath: app.config.database.password
     - kind: Secret
       name: redis-{{ .Release.Name }}-redis-auth
@@ -710,16 +713,21 @@ Outputs (auto-created by the CNPG operator; no chart-side Secret):
 
 Reference: `cozystack/packages/system/harbor/templates/redis.yaml`.
 
-The chart creates the Secret **before** the CR — the operator reads it via `spec.auth.secretPath`:
+The chart creates the Secret **before** the CR — the operator reads it via `spec.auth.secretPath`. The password is computed with `lookup` so an existing Secret is reused across re-renders; without this, `randAlphaNum` would emit a fresh value on every reconcile and silently rotate the RedisFailover credential. This matches the upstream idiom in `cozystack/packages/apps/redis/templates/redisfailover.yaml`:
 
 ```yaml
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (printf "%s-redis-auth" .Release.Name) }}
+{{- $password := randAlphaNum 32 | b64enc }}
+{{- if $existing }}
+{{-   $password = index $existing.data "password" }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Secret
 metadata:
   name: {{ .Release.Name }}-redis-auth
-stringData:
-  password: {{ .Values.redis.password | quote }}
+data:
+  password: {{ $password }}
 ---
 apiVersion: databases.spotahome.com/v1
 kind: RedisFailover
@@ -745,12 +753,12 @@ spec:
     secretPath: {{ .Release.Name }}-redis-auth
 ```
 
+If the user supplied `.Values.redis.password`, prefer it over the random value — replace `$password := randAlphaNum 32 | b64enc` with `$password := .Values.redis.password | b64enc` under a `{{- with .Values.redis.password }}` guard, preserving the `lookup` branch as the upgrade path.
+
 Outputs:
 
 - Secret `{{ .Release.Name }}-redis-auth` (chart-created) — key `password`.
 - Sentinel service `rfs-{{ .Release.Name }}-redis` on port `26379`.
-
-If `.Values.redis.password` is empty, generate a password inline so re-renders are stable — see the [`randAlphaNum`](https://pkg.go.dev/github.com/Masterminds/sprig/v3#hdr-String_Functions) Sprig helper and the `lookup` function to reuse an existing Secret on upgrade.
 
 ### service.yaml (if app exposes a port)
 
@@ -938,10 +946,12 @@ spec:
   dashboard:
     category: $CATEGORY
     singular: $APP_DISPLAY_NAME
-    plural: $APP_DISPLAY_NAME
+    plural: $APP_DISPLAY_PLURAL
     description: $APP_DESCRIPTION
     tags:
+      # Emit one list item per tag recorded in Phase 3 — do not collapse into a single entry.
       - $TAG1
+      - $TAG2
     icon: $ICON_B64
     keysOrder:
       - - apiVersion
