@@ -1195,7 +1195,7 @@ valuesFrom:
 | Operator | CloudNativePG (`cnpg.io`) — provided by `packages/system/cnpg-operator` |
 | CR | `postgresql.cnpg.io/v1` → `Cluster` |
 | Reference template | `cozystack/packages/system/harbor/templates/database.yaml` |
-| Reference consumer | `cozystack/packages/system/keycloak/templates/sts.yaml:142-168` |
+| Reference consumer | `cozystack/packages/system/keycloak/templates/sts.yaml` — the `KC_DB_*` env block |
 | Output Secret | Auto-created by the operator. If cluster is named `<release>-db`, the Secret is `<release>-db-app`. |
 | Output Secret keys | `host`, `port`, `username`, `password`, `dbname`, `uri`, `jdbc-uri` |
 | Superuser Secret | `<release>-db-superuser` (same keys + `superuser`) |
@@ -1267,5 +1267,5 @@ Read these files on demand when reasoning about structure and conventions:
 - CNPG bootstrap initdb: https://cloudnative-pg.io/documentation/current/bootstrap/#initdb
 - `cozystack/packages/apps/postgres/values.yaml` — reference for cozyvalues-gen annotation style (`@param`, `@typedef`, `@field`, `@enum`, `@section`)
 - `cozystack/packages/system/harbor/templates/database.yaml` — reference Pattern A: managed CNPG Cluster in chart templates
-- `cozystack/packages/system/keycloak/templates/sts.yaml` (lines 142-168) — reference Pattern A: consuming CNPG secret via secretKeyRef with keys `host`, `port`, `username`, `password`, `dbname`
-- `cozystack/packages/apps/harbor/templates/harbor.yaml` (lines 132-141) — reference Pattern A: database connection config with `existingSecret` and `host` pointing to CNPG `-rw` service
+- `cozystack/packages/system/keycloak/templates/sts.yaml` — reference Pattern A: the `KC_DB_*` env block consumes a CNPG Secret via `secretKeyRef` with keys `host`, `port`, `username`, `password`, `dbname`
+- `cozystack/packages/apps/harbor/templates/harbor.yaml` — reference Pattern A: the `database.external` values block wires `existingSecret` and points `host` at the CNPG `-rw` service
