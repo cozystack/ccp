@@ -18,6 +18,12 @@
       "description": "Diagnose and recover DRBD/LINSTOR storage issues in Kubernetes clusters — handles StandAlone, DELETING, Inconsistent, Diskless, quorum loss, bitmap errors, and other common failure modes",
       "source": "./skills/drbd-recovery",
       "category": "infrastructure"
+    },
+    {
+      "name": "cozystack-upgrade",
+      "description": "Guided upgrade of a running Cozystack v1.x cluster to a newer v1.x patch or minor version — release-notes analysis, prechecks, stop gates, helm upgrade, targeted post-upgrade verification, known failure recovery",
+      "source": "./skills/cozystack-upgrade",
+      "category": "infrastructure"
     }
   ]
 }
