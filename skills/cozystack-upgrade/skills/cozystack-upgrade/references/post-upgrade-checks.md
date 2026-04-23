@@ -61,10 +61,11 @@ For every managed tenant Kubernetes cluster, verify its apiserver responds and w
 for tcp_ns_name in $(kubectl get tenantcontrolplane -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {end}'); do
   ns="${tcp_ns_name%/*}"; name="${tcp_ns_name#*/}"
   echo "=== $ns/$name ==="
-  kubectl -n "$ns" get secret "${name}-admin-kubeconfig" -o jsonpath='{.data.admin\.conf}' | base64 -d > /tmp/tenant.conf
-  KUBECONFIG=/tmp/tenant.conf kubectl get nodes
-  KUBECONFIG=/tmp/tenant.conf kubectl get pods -A --no-headers | awk '$4!="Running" && $4!="Completed"'
-  rm /tmp/tenant.conf
+  tmp_kubeconfig=$(mktemp)
+  kubectl -n "$ns" get secret "${name}-admin-kubeconfig" -o jsonpath='{.data.admin\.conf}' | base64 -d > "$tmp_kubeconfig"
+  KUBECONFIG="$tmp_kubeconfig" kubectl get nodes
+  KUBECONFIG="$tmp_kubeconfig" kubectl get pods -A --no-headers | awk '$4!="Running" && $4!="Completed"'
+  rm "$tmp_kubeconfig"
 done
 ```
 
@@ -74,7 +75,7 @@ Expect: tenant nodes Ready, no non-Running pods (or only known-good ones).
 
 Summarize for the user in this shape:
 
-```
+```text
 Upgrade v1.1.1 → v1.2.0: SUCCESS
 
 Cluster:   3/3 nodes Ready · 178 pods Running · 48 namespaces Active

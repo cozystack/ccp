@@ -38,7 +38,7 @@ When you see this in notes → what it means → check to add in Step 7.
 
 Synthesize notes into a summary in this format:
 
-```
+```text
 Upgrading v1.1.1 → v1.2.0
 
 Components with breaking changes:

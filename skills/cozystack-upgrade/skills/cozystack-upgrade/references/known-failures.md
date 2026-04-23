@@ -6,7 +6,7 @@ Recovery procedures for stuck states observed during or after Cozystack upgrades
 
 ### Symptom
 
-```
+```text
 $ kubectl get hr -n <ns>
 NAME   AGE   READY   STATUS
 foo    ...   False   Helm uninstall failed for release <ns>/foo.vN with chart foo@...: failed to delete release: foo
@@ -46,7 +46,7 @@ flux reconcile hr <name> -n <ns> --force
 
 `tenant-<X>/<kubernetes-cluster>` kube-apiserver logs:
 
-```
+```text
 [core] grpc: addrConn.createTransport failed to connect to {Addr: "etcd.tenant-root.svc:2379", ...}.
 Err: ... dial tcp: lookup etcd.tenant-root.svc on 10.96.0.10:53: no such host
 F ... Error creating leases: error creating storage factory: context deadline exceeded
@@ -91,7 +91,7 @@ kubectl -n tenant-root get sts etcd -w
 
 Tenant kube-apiserver logs (after etcd is reachable again):
 
-```
+```text
 [core] grpc: ... transport: authentication handshake failed:
 tls: failed to verify certificate: x509: certificate signed by unknown authority
 (possibly because of "crypto/rsa: verification error" while trying to verify candidate authority certificate "etcd-ca")
@@ -129,7 +129,7 @@ If Kamaji does NOT regenerate the secret, likely case is #4 (upgrade phase block
 
 ### Symptom
 
-```
+```text
 $ kubectl get tenantcontrolplane -A
 NAMESPACE   NAME   VERSION   INSTALLED VERSION   STATUS
 tenant-X    foo    v1.33.8   v1.33.0             Ready   # mismatch!
@@ -137,7 +137,7 @@ tenant-X    foo    v1.33.8   v1.33.0             Ready   # mismatch!
 
 Kamaji logs:
 
-```
+```text
 ERROR handling of resource failed ... resource: "upgrade",
 error: "cannot retrieve available Upgrades for Kubernetes upgrade plan: couldn't list all nodes in cluster"
 ```
@@ -168,7 +168,7 @@ kubectl -n <tcp-ns> get tenantcontrolplane <tcp> -w
 
 ### Symptom
 
-```
+```text
 $ kubectl get hr -n <ns> <name> -o jsonpath='{.status.conditions}' | jq
 Stalled=True, reason=MissingRollbackTarget,
 message: "Failed to perform remediation: missing target release for rollback: cannot remediate failed release"
@@ -193,7 +193,7 @@ If the underlying cause is still present (apiserver unreachable, etc.), the retr
 
 ### Symptom
 
-```
+```text
 $ kubectl get hr -A | grep -v True
 tenant-X   foo-something   ...   False   could not get Source object:
   ExternalArtifact.source.toolkit.fluxcd.io "cozystack-foo-application-default-foo-system" not found
