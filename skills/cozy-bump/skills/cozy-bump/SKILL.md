@@ -16,7 +16,7 @@ Work in reasoning mode. Follow the phases in order. When a step fails or is ambi
 
 `$ARGUMENTS` contains the free-form tail after `/cozy-bump`. Extract:
 
-- Positional `<package-path-or-name>` — required. Either an absolute path, a path relative to the monorepo root (`packages/apps/postgres`), or a bare name (`postgres`) which is then resolved against `packages/{apps,system,extra,core}/<name>/`. If multiple matches are found across types, ask the user via `AskUserQuestion` which one.
+- Positional `<package-path-or-name>` — required. Either an absolute path, a path relative to the monorepo root (`packages/apps/postgres`), or a bare name (`postgres`) resolved against `packages/{apps,system,extra,core}/<name>/`. If multiple matches are found across types, ask the user via `AskUserQuestion` which one. `packages/library/` and `packages/tests/` are explicitly **out of scope** — those are internal helpers without an upstream version to track. If a bare-name match falls only into one of those, stop and explain.
 - `--target-version=<ver>` — explicit target (`16.4`, `v1.25.0`, `2.7.5`). If omitted, Phase 3 resolves the latest from upstream and asks the user to confirm.
 - `--no-deploy` — skip Phase 9 entirely (no prompt, no deploy).
 - `--registry=ttl.sh/<uuid>` — reuse an existing `ttl.sh` registry from a previous run (so a rebuild lands on the same image path). If omitted, Phase 9 generates a fresh UUID.
@@ -31,11 +31,11 @@ If `<package-path-or-name>` is missing, ask via `AskUserQuestion` — do not inv
 Bail early if any check fails.
 
 1. **Monorepo location**: verify the resolved `$PKG_DIR` lives under a clone whose root contains `hack/package.mk` and `hack/common-envs.mk`. If not, tell the user to `cd` into a cozystack monorepo checkout or set `$COZYSTACK_REPO`. Stop. Record `$REPO_ROOT=$(git -C "$PKG_DIR" rev-parse --show-toplevel)` for use by Phase 7 and Phase 8.
-2. **Package shape**: verify `$PKG_DIR/Chart.yaml` exists. Most packages carry `Chart.yaml.version: 0.0.0` as a build-time placeholder, but **not all** — known exceptions at time of writing include `apps/foundationdb` (`0.1.0`), `system/cozystack-scheduler` (`0.3.0`), `system/kubeovn` (`0.38.0`), `tests/cozy-lib-tests` (`0.1.0`). Treat a non-`0.0.0` version as a warning (note that the bump must not touch `version`, only `appVersion`), not a stop. Verify `$PKG_DIR/Makefile` exists and includes `hack/package.mk` (grep for `include .*package.mk`).
+2. **Package shape**: verify `$PKG_DIR/Chart.yaml` exists. Most in-scope packages carry `Chart.yaml.version: 0.0.0` as a build-time placeholder, but **not all** — known exceptions at time of writing include `apps/foundationdb` (`0.1.0`), `system/cozystack-scheduler` (`0.3.0`), `system/kubeovn` (`0.38.0`). Treat a non-`0.0.0` version as a warning (note that the bump must not touch `version`, only `appVersion`), not a stop. Verify `$PKG_DIR/Makefile` exists and includes `hack/package.mk` (grep for `include .*package.mk`).
 3. **Working tree**: run `git -C "$REPO_ROOT" status --porcelain --untracked-files=no`. If output is non-empty and `$ALLOW_DIRTY` is unset, print a one-line summary and stop. Recommend `git stash` or `--allow-dirty`.
 4. **Tools installed**: check that `yq` (v4 mikefarah), `jq`, `helm`, `docker buildx`, `cozyhr`, `cozyvalues-gen`, `kubectl`, `git`, `gh` are on `PATH` via `command -v`. Missing required tools → print install hints (link to each project's releases page) and stop. `gh` is required only for changelog scraping — if missing, warn and fall back to raw `curl` against the GitHub REST API in Phase 4. Note: every shell snippet in this skill is portable across macOS (BSD coreutils, GNU Make 3.81 default) and Linux (GNU coreutils). If you find yourself reaching for `make --eval`, `date --utc`, `date -u`, or any GNU-only flag, stop and rewrite using a portable form (e.g. `TZ=UTC date +...`, `make --makefile=- <<MK ... MK`).
 5. **GPG signing**: read `git -C "$REPO_ROOT" config commit.gpgsign`. If `true`, note that the Phase 8 commit will prompt for a YubiKey/PIN — surface this upfront so the user knows to be available.
-6. **Cluster context** (only when Phase 9 will run, i.e. `--no-deploy` is unset): read `kubectl config current-context`. Record `$KUBE_CONTEXT`. Do **not** verify cluster reachability yet — Phase 9 confirms the context with the user before any cluster call.
+6. **Cluster context** is **not** read here. The current-context can change between Phase 2 and Phase 9 (another shell, another `cozy-deploy` invocation, anything). Phase 9 Step 1 reads it freshly right before the deploy gate, so the read and the use are adjacent. Phase 2's only job is to confirm `kubectl` is on `PATH` (already covered by step 4).
 
 State `$PKG_DIR`, `$PKG_NAME`, `$PKG_TYPE`, working-tree status, and tool availability back to the user, then proceed.
 
@@ -49,9 +49,13 @@ Indicator: `$PKG_DIR/charts/<name>/Chart.yaml` exists. This is **the** signal �
 
 Resolve:
 - **Current version**: `yq '.version' "$PKG_DIR/charts/<name>/Chart.yaml"`. If multiple sub-charts exist (e.g. an operator chart plus a CRD chart), ask the user which one this bump targets.
-- **Target version**: if `$TARGET_VERSION` is set, use it. Otherwise:
+- **Helm repo registration** (run unconditionally — Phase 4 Step 2 depends on this):
   ```bash
   helm repo add --force-update <repo-name> <repo-url>
+  ```
+  For OCI repos there is no `helm repo add` equivalent; the OCI `oci://...` URL is passed directly to `helm show`/`helm pull`.
+- **Target version**: if `$TARGET_VERSION` is set on the CLI, use it. Otherwise:
+  ```bash
   helm search repo <repo-name>/<chart-name> --versions --output json | jq --raw-output '.[0].version'
   ```
   For OCI repos: `helm show chart oci://<repo>/<chart> --version <semver-range>`. Present the discovered latest to the user via `AskUserQuestion` and let them confirm or override.
@@ -96,11 +100,18 @@ Now that the current/target window is known, scrape the upstream changelog and a
 ### Step 1 — Fetch release notes
 
 ```bash
-gh release list --repo $UPSTREAM_OWNER/$UPSTREAM_REPO_NAME --limit 100 \
+GH_LIMIT=200
+gh release list --repo $UPSTREAM_OWNER/$UPSTREAM_REPO_NAME --limit "$GH_LIMIT" \
   --json tagName,name,publishedAt > /tmp/cozy-bump-releases.json
+COUNT=$(jq --raw-output 'length' /tmp/cozy-bump-releases.json)
+if [ "$COUNT" -ge "$GH_LIMIT" ]; then
+  echo "WARNING: gh release list returned $COUNT == --limit, results may be truncated."
+  echo "Increase GH_LIMIT or paginate via 'gh api repos/.../releases?page=N' if the bump"
+  echo "spans more tags than fit in one page."
+fi
 ```
 
-Filter to tags whose semver lies strictly between `$CURRENT_VERSION` (exclusive) and `$TARGET_VERSION` (inclusive). Tag prefixes vary — accept both `v1.2.3` and `1.2.3`; normalize via `semver` semantics, not string compare.
+Filter to tags whose semver lies strictly between `$CURRENT_VERSION` (exclusive) and `$TARGET_VERSION` (inclusive). Tag prefixes vary — accept both `v1.2.3` and `1.2.3`; normalize via `semver` semantics, not string compare. For Pattern C bumps that span many minor releases (postgres-style), 200 may not be enough — paginate via `gh api` and concatenate the pages before filtering.
 
 For each tag in the window:
 
@@ -115,7 +126,7 @@ If `gh release list` returns nothing for a project that uses tag-only releases (
 
 ### Step 2 — Helm values diff (Pattern A only)
 
-Precondition: the upstream Helm repo must already be registered locally — Phase 3's target-version resolution does this via `helm repo add --force-update <name> <url>`. If the user jumped past Phase 3 (e.g. `--target-version` was supplied on the CLI), run `helm repo add` here before the `show values` calls.
+Phase 3 already registered the upstream Helm repo unconditionally — this step can call `helm show values` directly.
 
 ```bash
 helm show values <repo-name>/<chart-name> --version $CURRENT_VERSION > /tmp/cozy-bump-values-current.yaml
@@ -259,7 +270,7 @@ After every batch, re-run the relevant grep from Phase 4 Step 4 to confirm no st
 
 ### Step 4 — Regenerate schema and ApplicationDefinition (when applicable)
 
-The `generate:` target is **not** universal — at time of writing it is defined in only ~30 of ~153 package Makefiles, almost exclusively under `packages/apps/*` (where each app has a sibling `system/<name>-rd/` ApplicationDefinition). For `packages/system/*` and `packages/core/*` packages this target typically does not exist, and most of those packages have no `values.schema.json` either (they are platform-managed, not exposed as CRDs).
+The `generate:` target is **not** universal — at time of writing it is defined in 30 of 159 package Makefiles, split as 22 under `packages/apps/*`, 7 under `packages/extra/*`, and 1 under `packages/library/*` (verify with `find packages -name Makefile -exec grep --files-with-matches '^generate:' {} \;` against the user's checkout). For `packages/system/*` and `packages/core/*` packages this target typically does not exist, and most of those packages have no `values.schema.json` either (they are platform-managed, not exposed as CRDs).
 
 Path:
 
@@ -277,10 +288,12 @@ Three valid paths through this step:
 1. **Going to deploy in Phase 9 (default)**: defer the build to Phase 9 Step 5A. Phase 9 builds against the cozystack publish registry (or `ttl.sh` for ephemeral testing — but `ttl.sh` digests must be reverted before Phase 8 commit; see Phase 9 Step 7).
 2. **Not deploying, but want a real image bump in this commit**: build right now against the cozystack publish registry:
    ```bash
+   # WILL FAIL WITH 403 unless you have push access to ghcr.io/cozystack/cozystack.
+   # Only cozystack maintainers have this — for everyone else, take path 3.
    REGISTRY=ghcr.io/cozystack/cozystack TAG=$TARGET_VERSION PLATFORM=linux/amd64 PUSH=1 \
      make --directory $PKG_DIR image
    ```
-   Requires push credentials to `ghcr.io/cozystack/cozystack` (only cozystack maintainers have these). The `image` target writes the resulting `<reg>:<tag>@sha256:<digest>` into `values.yaml` via `yq --inplace`.
+   The `image` target writes the resulting `<reg>:<tag>@sha256:<digest>` into `values.yaml` via `yq --inplace`.
 3. **Not deploying, no push credentials**: this skill cannot complete a Pattern B bump. Stop and tell the user — the bump must go to a maintainer who can push, or be promoted to a deploy + ttl.sh roundtrip + revert flow.
 
 Phase 5's plan gate must surface which path is in use; the gate refuses to proceed past Phase 5 with `--no-deploy` unless the user has confirmed path 2 or path 3.
@@ -338,11 +351,19 @@ Assisted-By: Claude <noreply@anthropic.com>
 EOF
 
 git -C "$REPO_ROOT" add "$PKG_DIR"
-# Phase 6 Step 4 set $RD_DIR_CHANGED if make generate emitted into a sibling -rd dir.
-# Re-derive defensively here in case the user touched something else:
-git -C "$REPO_ROOT" status --porcelain packages/system/ |
-  awk '/-rd\// {print $2}' |
-  xargs --no-run-if-empty git -C "$REPO_ROOT" add
+# Phase 6 Step 4's `make generate` may have emitted into packages/system/<name>-rd/.
+# Stage the whole sibling -rd/ directory with a glob — it's the simplest correct
+# behaviour, and it bypasses git porcelain parsing (which is fragile under
+# renames `R old -> new` and quoted filenames). The glob expands to nothing on
+# packages without a sibling -rd/, and `git add` accepts that without error.
+shopt -s nullglob 2>/dev/null  # bash; harmless under POSIX sh where the no-match path matters less here
+for rd in "$REPO_ROOT"/packages/system/*-rd/; do
+  case "$rd" in
+    "$REPO_ROOT/packages/system/${PKG_NAME}-rd/")
+      git -C "$REPO_ROOT" add "$rd"
+      ;;
+  esac
+done
 
 git -C "$REPO_ROOT" commit --signoff --file "$COMMIT_MSG"
 ```
@@ -351,7 +372,7 @@ Why a tempfile rather than `--message`: multi-line bodies via `--message "<<EOF�
 
 Why `git -C "$REPO_ROOT"` instead of `cd <repo-root>`: portable across BSD/GNU shells, no implicit working-directory side effects on the caller. `git -C` is the canonical short form — the long form `--directory` does not exist for `git`. Do not try to "fix" this to a long flag.
 
-`git -C "$REPO_ROOT" status --porcelain packages/system/ | awk '/-rd\// {print $2}'` derives any sibling `-rd/` paths the user does not already have staged — covers both the `apps/<name>` → `system/<name>-rd/` mapping (most common) and any hand-edits the user made there.
+Why a glob and not `git status --porcelain | awk` or `xargs --no-run-if-empty`: porcelain parsing breaks on renamed entries (`R old -> new`, where `awk '{print $2}'` returns `old`) and on filenames with whitespace. `xargs --no-run-if-empty` is GNU-only — BSD `xargs` happens to default to skip-empty so the symptom is benign, but the long flag is not portable. The targeted-glob form `packages/system/${PKG_NAME}-rd/` matches exactly the path `update-crd.sh` writes to and nothing else.
 
 GPG signing:
 - Respect `commit.gpgsign`. Never use `--no-gpg-sign`. Never use `-c commit.gpgsign=false`.
@@ -367,7 +388,13 @@ Skip this phase entirely when `--no-deploy` was passed or the user declined Phas
 
 ### Step 1 — Confirm deploy intent
 
-Ask via `AskUserQuestion`:
+Read the current kubectl context **freshly** here (not from any earlier-recorded value) so the gate matches the actual cluster the user is on:
+
+```bash
+KUBE_CONTEXT=$(kubectl config current-context)
+```
+
+Then ask via `AskUserQuestion`:
 
 > Deploy this bump to a real cluster for verification? Current kubectl context: `$KUBE_CONTEXT`.
 >
@@ -521,15 +548,25 @@ Suggested smoke checks for $PKG_NAME:
 
 Tailor the suggestions to the package — for `apps/postgres` suggest a `Postgres` CR creation; for `system/cilium` suggest a node-level connectivity check; etc. Use the package's README and templates as the source for what's realistic to check.
 
-Then ask via `AskUserQuestion`:
+Then ask via `AskUserQuestion`. The right wording depends on whether the deploy went through the ExternalArtifact + Pattern B path (`kubectl set image` against an artifact-backed release) or the inline-chart path (`make apply` wrote the chart directly):
 
-> Flux is currently suspended for `$RELEASE`. What now?
+**ExternalArtifact + Pattern B path** — what's running on the pod is the `ttl.sh` image you just pushed; what's in the source-of-truth artifact is still the **old** image. So:
+
+> Flux is currently suspended for `$RELEASE`. The pod is running your `ttl.sh` build; the platform's source-of-truth artifact still holds the **old** image. Resuming Flux will reconcile the pod **back to the old image** — your bump never landed in the artifact and is not on this cluster permanently.
 >
-> - `resume` — `cozyhr resume` to commit to the bump on this cluster
-> - `keep-suspended` — leave Flux off so you can iterate (re-run `make apply`, `make image`)
-> - `revert` — restore previous values.yaml (`git checkout -- $PKG_DIR/values.yaml`) and `cozyhr resume` to roll back
+> - `resume` — release Flux. The platform operator reconciles the workload back to the source-of-truth digest (the **old** image). Use this when verification is done and you want the cluster restored to baseline.
+> - `keep-suspended` — leave Flux off so you can iterate (`make image` again, `kubectl set image` again).
+> - `revert` — same end state as `resume` (Flux reverts the kubectl set image), plus restore `values.yaml` locally (`git -C "$REPO_ROOT" checkout -- "$PKG_DIR/values.yaml"`) so the `ttl.sh` digest does not accidentally land in the Phase 8 commit.
 
-If `revert` was picked AND Pattern B Step 5A re-wrote `values.yaml` with a `ttl.sh` digest, the `git checkout` undoes that automatically. Confirm with `git status` before running `cozyhr resume`.
+`resume` and `revert` end at the same cluster state for this path. The difference is whether your local `values.yaml` carries the ephemeral `ttl.sh` digest — `revert` cleans it; `resume` alone does not. **Always** clean local `values.yaml` before Phase 8 commits — the guardrail at the bottom of this SKILL is non-negotiable.
+
+**Inline-chart path** — `make apply` actually installed the bumped chart. So:
+
+> Flux is currently suspended for `$RELEASE`. The bumped chart is installed on this cluster.
+>
+> - `resume` — `cozyhr resume` to release Flux. Flux will reconcile against the bumped chart you applied; the bump persists on this cluster.
+> - `keep-suspended` — leave Flux off so you can iterate (re-run `make apply`).
+> - `revert` — `git -C "$REPO_ROOT" checkout -- "$PKG_DIR"` to restore the previous chart, then `make --directory $PKG_DIR apply NAMESPACE=$NAMESPACE NAME=$RELEASE` to install the prior version, then `cozyhr resume`.
 
 ### Dry-run mode
 
