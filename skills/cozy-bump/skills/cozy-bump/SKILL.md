@@ -48,7 +48,7 @@ Cozystack packages follow three distinct upstream patterns. Detect which one app
 Indicator: `$PKG_DIR/charts/<name>/Chart.yaml` exists. This is **the** signal — cozystack vendors via `helm pull --untar` into `charts/`, not via `Chart.yaml.dependencies`. The one package with a `dependencies:` block today (`apps/qdrant`) points at the in-tree `cozy-lib` library via `repository: file://charts/cozy-lib`, which is **not** an upstream-vendor case — ignore that pattern.
 
 Resolve:
-- **Current version**: `yq '.version' "$PKG_DIR/charts/<name>/Chart.yaml"`. If multiple sub-charts exist (e.g. an operator chart plus a CRD chart), ask the user which one this bump targets.
+- **Current version**: `yq '.version' "$PKG_DIR/charts/<name>/Chart.yaml"`. The `<name>` here is the chart's own metadata name (read it via `yq '.name' "$PKG_DIR/charts/<dir>/Chart.yaml"`), which may differ from the package directory name — `system/postgres-operator` vendors `cloudnative-pg`, `system/external-secrets-operator` vendors `external-secrets`. The directory under `charts/` matches the chart name, not the package name. If multiple sub-charts exist (operator chart + CRD chart, etc.), ask the user which one this bump targets.
 - **Helm repo registration** (run unconditionally — Phase 4 Step 2 depends on this):
   ```bash
   helm repo add --force-update <repo-name> <repo-url>
@@ -256,6 +256,8 @@ Path:
 
 1. Read `$PKG_DIR/Makefile` — find the line matching `helm pull .* --version <X>`.
 2. If a `--version <X>` is hardcoded, edit that line in-place to `--version $TARGET_VERSION`. Use the agent's Edit tool for this — `sed --in-place` is GNU-only and breaks on macOS BSD `sed` (which requires `-i ''` with a backup-extension argument). The cozystack monorepo itself ships a `SED_INPLACE` shim in `hack/common-envs.mk` for exactly this reason; don't reinvent it inline. Surface the diff to the user before continuing.
+
+   If the Makefile's `helm pull` line has **no** `--version` flag at all (e.g., `system/ingress-nginx/Makefile` runs `helm pull ingress-nginx/ingress-nginx --untar --untardir charts` and gets whatever the upstream calls "latest"), inject one explicitly: edit the line to add `--version $TARGET_VERSION`. The Step 5 self-check below catches this if missed, but injecting upfront avoids the wasted `helm pull` round-trip.
 3. Run `make --directory $PKG_DIR update`. The target's pre-clean (`rm -rf charts/`) is preserved by editing the version literal only.
 4. If the Makefile has no `update` target, replicate the convention manually — the pre-clean step is non-negotiable:
 
@@ -453,7 +455,7 @@ Each cozystack package that is deployed via `cozyhr apply` sets `NAME` and `NAME
 - `system/ingress-nginx/Makefile` → `NAME=ingress-nginx-system`
 - `apps/postgres/Makefile` → does **not** set `NAME` / `NAMESPACE` at all (apps under `packages/apps/` are templates for tenant-created CRs, not singleton releases).
 
-Read the values from the package Makefile via a portable helper (works on GNU Make 3.81 / BSD make / modern GNU Make — `--eval` is GNU 3.82+ only and unavailable on stock macOS):
+Read the values from the package Makefile via a portable helper (works on GNU Make 3.81+, including the version Apple ships with macOS — `--eval` is GNU 3.82+ only and unavailable there):
 
 ```bash
 read_make_var() {
@@ -469,7 +471,9 @@ RELEASE=$(read_make_var "$PKG_DIR" NAME)
 NAMESPACE=$(read_make_var "$PKG_DIR" NAMESPACE)
 ```
 
-If either resolves empty, this package is **not** deployable via `cozyhr apply` — typically a templates-only package under `packages/apps/`. Tell the user that Phase 9 is unavailable for this package shape and skip the rest of Phase 9. The bump itself (Phases 6–8) is still valid; the user verifies on a tenant CR via `cozy-deploy` or by hand.
+If both resolve empty, this package is **not** deployable via `cozyhr apply` — typically a templates-only package under `packages/apps/`. Tell the user that Phase 9 is unavailable for this package shape and skip the rest of Phase 9. The bump itself (Phases 6–8) is still valid; the user verifies on a tenant CR via `cozy-deploy` or by hand.
+
+If only one resolves empty (e.g., `system/ingress-nginx/Makefile` exports `NAME=ingress-nginx-system` but no `NAMESPACE`, expecting the caller to supply it), prompt the user via `AskUserQuestion` for the missing value rather than treating the package as undeployable. This is a known shape — a single missing value should not skip Phase 9.
 
 Otherwise, show the resolved `$RELEASE` and `$NAMESPACE` to the user before any cluster call.
 
