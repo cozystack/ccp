@@ -105,13 +105,25 @@ gh release list --repo $UPSTREAM_OWNER/$UPSTREAM_REPO_NAME --limit "$GH_LIMIT" \
   --json tagName,name,publishedAt > /tmp/cozy-bump-releases.json
 COUNT=$(jq --raw-output 'length' /tmp/cozy-bump-releases.json)
 if [ "$COUNT" -ge "$GH_LIMIT" ]; then
-  echo "WARNING: gh release list returned $COUNT == --limit, results may be truncated."
-  echo "Increase GH_LIMIT or paginate via 'gh api repos/.../releases?page=N' if the bump"
-  echo "spans more tags than fit in one page."
+  # COUNT == GH_LIMIT means we hit the cap (could be exactly that many releases,
+  # could be more). Confirm by fetching the page beyond the cap — page number is
+  # 1-based, per_page=1 means page=N returns the N-th release.
+  EXTRA=$(gh api "repos/$UPSTREAM_OWNER/$UPSTREAM_REPO_NAME/releases?per_page=1&page=$((GH_LIMIT + 1))" --jq 'length')
+  if [ "$EXTRA" -gt 0 ]; then
+    echo "WARNING: gh release list returned $COUNT == --limit and more pages exist."
+    echo "Increase GH_LIMIT or paginate via 'gh api repos/.../releases?page=N' if the bump"
+    echo "spans more tags than fit in one page."
+  fi
 fi
 ```
 
-Filter to tags whose semver lies strictly between `$CURRENT_VERSION` (exclusive) and `$TARGET_VERSION` (inclusive). Tag prefixes vary — accept both `v1.2.3` and `1.2.3`; normalize via `semver` semantics, not string compare. For Pattern C bumps that span many minor releases (postgres-style), 200 may not be enough — paginate via `gh api` and concatenate the pages before filtering.
+Filter to tags whose semver lies strictly between `$CURRENT_VERSION` (exclusive) and `$TARGET_VERSION` (inclusive). Tag prefixes vary — accept both `v1.2.3` and `1.2.3`; normalize via real semver semantics, not lexicographic string compare. Concrete tools, in order of preference:
+
+1. `helm` itself: `helm install --version <range>` and `helm search repo --versions` already accept semver constraints — reuse them when the goal is "is this version between X and Y" rather than ordering a list.
+2. The standalone `semver` CLI (npm package, `brew install semver`): `semver --range ">$CURRENT_VERSION <=$TARGET_VERSION" "$tag"`.
+3. As a last resort, a small bash helper that strips a leading `v` and compares with `sort --version-sort` (`printf '%s\n%s\n' "$a" "$b" | sort --version-sort | head -1`). Note `sort --version-sort` is GNU-only — on macOS use `gsort` from coreutils.
+
+For Pattern C bumps that span many minor releases (postgres-style), 200 may not be enough — paginate via `gh api` and concatenate the pages before filtering.
 
 For each tag in the window:
 
@@ -274,10 +286,9 @@ The `generate:` target is **not** universal — at time of writing it is defined
 
 Path:
 
-1. Check whether the target exists: `make --directory "$PKG_DIR" --question generate >/dev/null 2>&1; echo $?`. Exit 1 from `--question` means "target exists but is out of date" (run it). Exit 2 means "no such target" (skip without warning). Exit 0 means up-to-date (run anyway — bumps almost always change `values.yaml`).
-2. If exists: `make --directory $PKG_DIR generate`. This rebuilds `values.schema.json` and the corresponding `packages/system/<name>-rd/cozyrds/<name>.yaml` ApplicationDefinition.
-3. If not exists: skip silently. Do not warn about a missing schema for `system/*`/`core/*` packages.
-4. Record `$RD_DIR_CHANGED` for Phase 8: after `generate` (or its skip), run `git -C "$REPO_ROOT" status --porcelain packages/system/ | grep --extended-regexp '/<name>-rd/' || true` and capture the result. Phase 8 uses this to decide what extra paths to `git add`.
+1. Check whether the target exists by grepping the package Makefile for `^generate:` (more reliable than `make --question` for non-PHONY targets — `--question` returns 0/1/2 based on prerequisite freshness, not target presence, and the cozystack `generate:` recipes are not declared `.PHONY`).
+2. If `^generate:` is present: `make --directory $PKG_DIR generate`. This rebuilds `values.schema.json` and writes the corresponding ApplicationDefinition under `packages/system/$(yq '.name' $PKG_DIR/Chart.yaml)-rd/cozyrds/`.
+3. If absent: skip silently. Do not warn about a missing schema for `system/*`/`core/*` packages.
 
 ### Step 5 — Image-build packages (Pattern B)
 
@@ -285,7 +296,7 @@ For Pattern B, the bump is **not complete** until a fresh image is built and the
 
 Three valid paths through this step:
 
-1. **Going to deploy in Phase 9 (default)**: defer the build to Phase 9 Step 5A. Phase 9 builds against the cozystack publish registry (or `ttl.sh` for ephemeral testing — but `ttl.sh` digests must be reverted before Phase 8 commit; see Phase 9 Step 7).
+1. **Going to deploy in Phase 9 (default)**: defer the build to the ExternalArtifact + Pattern B sub-path of Phase 9 Step 5 (or the inline-chart path when applicable). Phase 9 builds against the cozystack publish registry (or `ttl.sh` for ephemeral testing — but `ttl.sh` digests must be reverted before Phase 8 commit; see Phase 9 Step 7).
 2. **Not deploying, but want a real image bump in this commit**: build right now against the cozystack publish registry:
    ```bash
    # WILL FAIL WITH 403 unless you have push access to ghcr.io/cozystack/cozystack.
@@ -351,28 +362,27 @@ Assisted-By: Claude <noreply@anthropic.com>
 EOF
 
 git -C "$REPO_ROOT" add "$PKG_DIR"
-# Phase 6 Step 4's `make generate` may have emitted into packages/system/<name>-rd/.
-# Stage the whole sibling -rd/ directory with a glob — it's the simplest correct
-# behaviour, and it bypasses git porcelain parsing (which is fragile under
-# renames `R old -> new` and quoted filenames). The glob expands to nothing on
-# packages without a sibling -rd/, and `git add` accepts that without error.
-shopt -s nullglob 2>/dev/null  # bash; harmless under POSIX sh where the no-match path matters less here
-for rd in "$REPO_ROOT"/packages/system/*-rd/; do
-  case "$rd" in
-    "$REPO_ROOT/packages/system/${PKG_NAME}-rd/")
-      git -C "$REPO_ROOT" add "$rd"
-      ;;
-  esac
-done
+# Phase 6 Step 4's `make generate` may have emitted into packages/system/<chart-name>-rd/.
+# The -rd/ directory is named after the *Chart.yaml chart name*, NOT the package
+# directory basename. They diverge — e.g. apps/vpc has Chart.yaml.name =
+# virtualprivatecloud, so update-crd.sh writes to system/virtualprivatecloud-rd/.
+# Read the chart name and stage that exact path:
+CHART_NAME=$(yq '.name' "$PKG_DIR/Chart.yaml")
+RD_DIR="$REPO_ROOT/packages/system/${CHART_NAME}-rd"
+if [ -d "$RD_DIR" ]; then
+  git -C "$REPO_ROOT" add "$RD_DIR"
+fi
 
 git -C "$REPO_ROOT" commit --signoff --file "$COMMIT_MSG"
 ```
+
+**Self-check after staging** (mandatory invariant): for any package that has a `generate:` target, `git diff --cached --stat` must list at least one file under `packages/system/${CHART_NAME}-rd/` — otherwise the ApplicationDefinition is out of sync with the bumped `appVersion` and the commit is a "lying bump". Stop and ask the user.
 
 Why a tempfile rather than `--message`: multi-line bodies via `--message "<<EOF…EOF"` are fragile under shell escaping (backticks, dollar signs, single quotes). The tempfile approach lets the body land verbatim and is cleaned up by the `trap` regardless of exit path.
 
 Why `git -C "$REPO_ROOT"` instead of `cd <repo-root>`: portable across BSD/GNU shells, no implicit working-directory side effects on the caller. `git -C` is the canonical short form — the long form `--directory` does not exist for `git`. Do not try to "fix" this to a long flag.
 
-Why a glob and not `git status --porcelain | awk` or `xargs --no-run-if-empty`: porcelain parsing breaks on renamed entries (`R old -> new`, where `awk '{print $2}'` returns `old`) and on filenames with whitespace. `xargs --no-run-if-empty` is GNU-only — BSD `xargs` happens to default to skip-empty so the symptom is benign, but the long flag is not portable. The targeted-glob form `packages/system/${PKG_NAME}-rd/` matches exactly the path `update-crd.sh` writes to and nothing else.
+Why `Chart.yaml.name` and not `$PKG_NAME` for the `-rd/` path: the cozystack `hack/update-crd.sh` script reads the chart name from `Chart.yaml` (not the directory). For most packages they coincide, but `apps/vpc` (chart `virtualprivatecloud`) breaks the assumption. Using `$PKG_NAME` would silently miss the regenerated ApplicationDefinition and ship a desynchronised commit.
 
 GPG signing:
 - Respect `commit.gpgsign`. Never use `--no-gpg-sign`. Never use `-c commit.gpgsign=false`.
@@ -393,6 +403,8 @@ Read the current kubectl context **freshly** here (not from any earlier-recorded
 ```bash
 KUBE_CONTEXT=$(kubectl config current-context)
 ```
+
+Caveat: if the user has `KUBECONFIG` exporting multiple files, "current" resolves to whichever file the merge strategy lands on first — that may not match their mental model. The Step 1 `AskUserQuestion` (with `pick-context` as one of the options) is the safety net; if the user picks a different name, take that one as authoritative for the rest of Phase 9.
 
 Then ask via `AskUserQuestion`:
 
