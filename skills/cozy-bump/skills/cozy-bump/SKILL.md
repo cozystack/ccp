@@ -119,9 +119,10 @@ fi
 
 Filter to tags whose semver lies strictly between `$CURRENT_VERSION` (exclusive) and `$TARGET_VERSION` (inclusive). Tag prefixes vary — accept both `v1.2.3` and `1.2.3`; normalize via real semver semantics, not lexicographic string compare. Concrete tools, in order of preference:
 
-1. `helm` itself: `helm install --version <range>` and `helm search repo --versions` already accept semver constraints — reuse them when the goal is "is this version between X and Y" rather than ordering a list.
-2. The standalone `semver` CLI (npm package, `brew install semver`): `semver --range ">$CURRENT_VERSION <=$TARGET_VERSION" "$tag"`.
-3. As a last resort, a small bash helper that strips a leading `v` and compares with `sort --version-sort` (`printf '%s\n%s\n' "$a" "$b" | sort --version-sort | head -1`). Note `sort --version-sort` is GNU-only — on macOS use `gsort` from coreutils.
+1. The standalone `semver` CLI (npm package; install via `npm install -g semver` or `brew install node && npm install -g semver`): `semver --range ">$CURRENT_VERSION <=$TARGET_VERSION" "$tag"` returns the tag when it satisfies the range, exits non-zero otherwise. Loop the candidate tags through this check.
+2. As a last resort, a small bash helper that strips a leading `v` and compares with `sort --version-sort` (`printf '%s\n%s\n' "$a" "$b" | sort --version-sort | head --lines=1`). Note `sort --version-sort` is GNU-only — on macOS install GNU coreutils via `brew install coreutils` and call `gsort --version-sort` instead.
+
+Do **not** try to use `helm install --version <range>` for filtering. `helm install --version` resolves a *single* chart version that satisfies the constraint and proceeds to install it; it does not return a list of tags in the range. Likewise `helm search repo --versions` lists every available version but does not accept range filtering. Both are the wrong primitive for this task.
 
 For Pattern C bumps that span many minor releases (postgres-style), 200 may not be enough — paginate via `gh api` and concatenate the pages before filtering.
 
@@ -157,7 +158,7 @@ If the chart has `crds/` or `templates/` containing `kind: CustomResourceDefinit
 
 Scan `/tmp/cozy-bump-changelog.md` for these patterns (case-sensitive where indicated):
 
-- Case-insensitive substring: `breaking change`, `breaking:`, `deprecat`, `removed`, `renamed`, `migration`, `action required`, `incompatible`, `no longer supported`.
+- Case-insensitive substring: `breaking change`, `breaking:`, `deprecat`, `removed`, `renamed`, `migration`, `action required`, `incompatible`, `no longer supported`. To cut noise from `removed`/`renamed`/`migration` (which match phrases like "no items removed"), filter to lines that also fall within 5 lines of a version header (`## vX.Y.Z`, `### X.Y.Z`, etc.) or include "in this release"/"this version"/"in vX.Y" tokens — those proximity filters keep the matches anchored to a release.
 - Case-sensitive: `BREAKING`, RFC 2119 conformance keywords (`MUST` / `MUST NOT` / `MUST be`, `SHOULD` / `SHOULD NOT`, `MAY` / `MAY NOT`, `REQUIRED`, `SHALL` / `SHALL NOT`). Lowercase `must` matches almost every changelog and drowns the signal — don't grep on it.
 
 For each hit, capture the surrounding bullet/paragraph plus the tag it came from.
@@ -191,7 +192,7 @@ If **no adaptations** are found and the changelog says "no breaking changes", re
 Assemble every decision so far into one consolidated plan. Show via `AskUserQuestion`:
 
 ```text
-cozy-bump plan for $PKG_TYPE/$PKG_NAME
+cozy-bump plan for packages/$PKG_TYPE/$PKG_NAME
 
 Pattern:         $BUMP_PATTERN ($CURRENT_VERSION → $TARGET_VERSION)
 Upstream:        https://github.com/$UPSTREAM_OWNER/$UPSTREAM_REPO_NAME
@@ -254,7 +255,7 @@ The package's `make update` target (when present) hardcodes the upstream version
 Path:
 
 1. Read `$PKG_DIR/Makefile` — find the line matching `helm pull .* --version <X>`.
-2. If a `--version <X>` is hardcoded, edit that line to `--version $TARGET_VERSION` via `sed --in-place` (or a targeted Edit). Surface the diff to the user before continuing.
+2. If a `--version <X>` is hardcoded, edit that line in-place to `--version $TARGET_VERSION`. Use the agent's Edit tool for this — `sed --in-place` is GNU-only and breaks on macOS BSD `sed` (which requires `-i ''` with a backup-extension argument). The cozystack monorepo itself ships a `SED_INPLACE` shim in `hack/common-envs.mk` for exactly this reason; don't reinvent it inline. Surface the diff to the user before continuing.
 3. Run `make --directory $PKG_DIR update`. The target's pre-clean (`rm -rf charts/`) is preserved by editing the version literal only.
 4. If the Makefile has no `update` target, replicate the convention manually — the pre-clean step is non-negotiable:
 
@@ -293,12 +294,13 @@ Path:
 1. Check whether the target exists by grepping the package Makefile for `^generate:` (more reliable than `make --question` for non-PHONY targets — `--question` returns 0/1/2 based on prerequisite freshness, not target presence, and the cozystack `generate:` recipes are not declared `.PHONY`).
 2. If `^generate:` is present:
    ```bash
+   set -o pipefail  # ensure the if-test sees `make`'s exit status, not `tee`'s
    if ! make --directory "$PKG_DIR" generate 2>&1 | tee /tmp/cozy-bump-generate.log; then
      echo "make generate failed — aborting before any commit. See /tmp/cozy-bump-generate.log." >&2
      exit 1
    fi
    ```
-   This rebuilds `values.schema.json` and writes the corresponding ApplicationDefinition under `packages/system/$(yq '.name' $PKG_DIR/Chart.yaml)-rd/cozyrds/`. Capture stderr verbatim — common silent-failure modes (e.g., `update-crd.sh` exits 1 because the icon file is missing) are easy to miss otherwise.
+   This rebuilds `values.schema.json` and writes the corresponding ApplicationDefinition under `packages/system/$(yq '.name' $PKG_DIR/Chart.yaml)-rd/cozyrds/`. Capture stderr verbatim — common silent-failure modes (e.g., `update-crd.sh` exits 1 because the icon file is missing) are easy to miss otherwise. **Without `pipefail`, the `if !` test would catch `tee`'s exit status (always 0 when it can write the file), and a failing `make generate` would slip through the gate.**
 3. If absent: skip silently. Do not warn about a missing schema for `system/*`/`core/*` packages.
 
 ### Step 5 — Image-build packages (Pattern B)
@@ -501,12 +503,29 @@ if [ -z "$REGISTRY" ]; then
 fi
 TAG="bump-$TARGET_VERSION-$(TZ=UTC date +%Y%m%d-%H%M%S)"  # TZ=UTC over --utc/-u for BSD+GNU portability
 
-# Detect the cluster's node architecture rather than hardcoding linux/amd64 —
-# kind on Apple Silicon, Talos on Ampere, and any arm64 dev cluster need
-# linux/arm64 or the pod will crashloop with "exec format error" after set-image.
-NODE_ARCH=$(kubectl --context $KUBE_CONTEXT get nodes \
-  --output jsonpath='{.items[0].status.nodeInfo.architecture}')
-PLATFORM="linux/${NODE_ARCH}"
+# Detect the cluster's node architecture(s) rather than hardcoding linux/amd64.
+# Sample EVERY node — heterogeneous clusters (Ampere control planes + amd64
+# workers, kind-on-Mac control plane + remote arm64 builders) are increasingly
+# common, and a single-arch image will crashloop on the unmatched nodes with
+# "exec format error".
+NODE_ARCHES=$(kubectl --context $KUBE_CONTEXT get nodes \
+  --output jsonpath='{range .items[*]}{.status.nodeInfo.architecture}{"\n"}{end}' |
+  sort --unique | tr '\n' ',' | sed 's/,$//')
+
+case "$NODE_ARCHES" in
+  *,*)
+    # Heterogeneous — build a multi-arch manifest. Cozystack's hack/common-envs.mk
+    # already supports comma-separated PLATFORM values for buildx.
+    PLATFORM=$(printf 'linux/%s,' $(echo "$NODE_ARCHES" | tr ',' ' ') | sed 's/,$//')
+    ;;
+  '')
+    echo "Could not detect node architecture — stopping."
+    exit 1
+    ;;
+  *)
+    PLATFORM="linux/${NODE_ARCHES}"
+    ;;
+esac
 
 REGISTRY=$REGISTRY TAG=$TAG PLATFORM=$PLATFORM PUSH=1 \
   make --directory $PKG_DIR image
@@ -524,9 +543,9 @@ case "$IMAGE_RAW" in
     ;;
   '{'*)
     REPO=$(yq '.<key>.image.repository' "$PKG_DIR/values.yaml")
-    TAG=$(yq '.<key>.image.tag' "$PKG_DIR/values.yaml")
+    IMG_TAG=$(yq '.<key>.image.tag' "$PKG_DIR/values.yaml")  # not $TAG — that's the build tag
     DIGEST=$(yq '.<key>.image.digest' "$PKG_DIR/values.yaml")
-    NEW_IMAGE="${REPO}:${TAG}@${DIGEST}"
+    NEW_IMAGE="${REPO}:${IMG_TAG}@${DIGEST}"
     ;;
   *)
     echo "Unrecognised .<key>.image shape — stopping. Inspect $PKG_DIR/values.yaml manually."
@@ -680,7 +699,7 @@ If anything earlier failed and was not recovered, the summary should reflect tha
 - **Always** treat ExternalArtifact-shaped releases differently from inline chart releases — local `values.yaml` is ignored by Flux for the former. Stop and explain rather than pretending the deploy happened.
 - For Pattern C (postgres-style enums), the bump is the `hack/update-versions.sh` output — do not hand-edit `files/versions.yaml` after running the script unless the user explicitly asks.
 - **Always** pass `--context $KUBE_CONTEXT` and `--namespace $NAMESPACE` to every `kubectl` and `cozyhr` call in Phase 9 — never rely on the global current-context.
-- **Always** use full flag names (`--raw-output`, not `-r`; `--output name`, not `-o name`; `--directory`, not `-C`) per the cozystack project standard. Short flags in prescribed commands train the user to mix conventions.
+- **Always** use full flag names per the cozystack project standard: `--raw-output` not `-r`, `--output name` not `-o name`, `--directory` not `-C` for `make` and similar tools that have a long form. Exception: `git -C <dir>` has no `--directory` long form (this has been a `git` quirk since the flag was added in 1.8.5); `-C` IS the canonical spelling for `git` and must not be "fixed" to a long form. Short flags in any other prescribed command train the user to mix conventions.
 - **Always** prefer portable shell idioms — `TZ=UTC date +...` over `date --utc`/`date -u`, `make --makefile=- <<MK ... MK` over `make --eval='...'`. The skill must run unchanged on macOS (GNU Make 3.81, BSD coreutils) and Linux.
 
 ## References
