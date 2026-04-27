@@ -30,11 +30,11 @@ If `<package-path-or-name>` is missing, ask via `AskUserQuestion` — do not inv
 
 Bail early if any check fails.
 
-1. **Monorepo location**: verify the resolved `$PKG_DIR` lives under a clone whose root contains `hack/package.mk` and `hack/common-envs.mk`. If not, tell the user to `cd` into a cozystack monorepo checkout or set `$COZYSTACK_REPO`. Stop.
-2. **Package shape**: verify `$PKG_DIR/Chart.yaml` exists and `Chart.yaml.version` is the placeholder `0.0.0` (every package in this monorepo follows that convention; a non-`0.0.0` value indicates a manually edited file or a non-package directory). Verify `$PKG_DIR/Makefile` exists and includes `hack/package.mk` (grep for `include .*package.mk`).
-3. **Working tree**: run `git -C <repo-root> status --porcelain --untracked-files=no`. If output is non-empty and `$ALLOW_DIRTY` is unset, print a one-line summary and stop. Recommend `git stash` or `--allow-dirty`.
+1. **Monorepo location**: verify the resolved `$PKG_DIR` lives under a clone whose root contains `hack/package.mk` and `hack/common-envs.mk`. If not, tell the user to `cd` into a cozystack monorepo checkout or set `$COZYSTACK_REPO`. Stop. Record `$REPO_ROOT=$(git -C "$PKG_DIR" rev-parse --show-toplevel)` for use by Phase 7 and Phase 8.
+2. **Package shape**: verify `$PKG_DIR/Chart.yaml` exists. Most packages carry `Chart.yaml.version: 0.0.0` as a build-time placeholder, but **not all** — known exceptions at time of writing include `apps/foundationdb` (`0.1.0`), `system/cozystack-scheduler` (`0.3.0`), `system/kubeovn` (`0.38.0`), `tests/cozy-lib-tests` (`0.1.0`). Treat a non-`0.0.0` version as a warning (note that the bump must not touch `version`, only `appVersion`), not a stop. Verify `$PKG_DIR/Makefile` exists and includes `hack/package.mk` (grep for `include .*package.mk`).
+3. **Working tree**: run `git -C "$REPO_ROOT" status --porcelain --untracked-files=no`. If output is non-empty and `$ALLOW_DIRTY` is unset, print a one-line summary and stop. Recommend `git stash` or `--allow-dirty`.
 4. **Tools installed**: check that `yq` (v4 mikefarah), `jq`, `helm`, `docker buildx`, `cozyhr`, `cozyvalues-gen`, `kubectl`, `git`, `gh` are on `PATH` via `command -v`. Missing required tools → print install hints (link to each project's releases page) and stop. `gh` is required only for changelog scraping — if missing, warn and fall back to raw `curl` against the GitHub REST API in Phase 4. Note: every shell snippet in this skill is portable across macOS (BSD coreutils, GNU Make 3.81 default) and Linux (GNU coreutils). If you find yourself reaching for `make --eval`, `date --utc`, `date -u`, or any GNU-only flag, stop and rewrite using a portable form (e.g. `TZ=UTC date +...`, `make --makefile=- <<MK ... MK`).
-5. **GPG signing**: read `git -C <repo-root> config commit.gpgsign`. If `true`, note that the Phase 8 commit will prompt for a YubiKey/PIN — surface this upfront so the user knows to be available.
+5. **GPG signing**: read `git -C "$REPO_ROOT" config commit.gpgsign`. If `true`, note that the Phase 8 commit will prompt for a YubiKey/PIN — surface this upfront so the user knows to be available.
 6. **Cluster context** (only when Phase 9 will run, i.e. `--no-deploy` is unset): read `kubectl config current-context`. Record `$KUBE_CONTEXT`. Do **not** verify cluster reachability yet — Phase 9 confirms the context with the user before any cluster call.
 
 State `$PKG_DIR`, `$PKG_NAME`, `$PKG_TYPE`, working-tree status, and tool availability back to the user, then proceed.
@@ -45,12 +45,10 @@ Cozystack packages follow three distinct upstream patterns. Detect which one app
 
 ### Pattern A — Vendored upstream Helm chart
 
-Indicators:
-- `$PKG_DIR/Chart.yaml` has a `dependencies:` block listing one or more upstream charts, and/or
-- `$PKG_DIR/charts/` contains one or more sub-chart tarballs or directories.
+Indicator: `$PKG_DIR/charts/<name>/Chart.yaml` exists. This is **the** signal — cozystack vendors via `helm pull --untar` into `charts/`, not via `Chart.yaml.dependencies`. The one package with a `dependencies:` block today (`apps/qdrant`) points at the in-tree `cozy-lib` library via `repository: file://charts/cozy-lib`, which is **not** an upstream-vendor case — ignore that pattern.
 
 Resolve:
-- **Current version**: read each entry's `version:` from `Chart.yaml.dependencies[]`. If the dependency lives in `charts/<name>/Chart.yaml`, read `version:` from there.
+- **Current version**: `yq '.version' "$PKG_DIR/charts/<name>/Chart.yaml"`. If multiple sub-charts exist (e.g. an operator chart plus a CRD chart), ask the user which one this bump targets.
 - **Target version**: if `$TARGET_VERSION` is set, use it. Otherwise:
   ```bash
   helm repo add --force-update <repo-name> <repo-url>
@@ -66,7 +64,7 @@ Resolve:
 ### Pattern B — In-repo image build
 
 Indicators:
-- `$PKG_DIR/Makefile` defines an `image:` or `image-<name>:` target driving `docker buildx build` (grep `Makefile` for `docker buildx`).
+- `$PKG_DIR/Makefile` defines an `image:` target (grep for `^image:` at column 0). Cozystack convention is the top-level `image:` target delegates to one or more `image-<name>:` sub-targets that drive `docker buildx build`.
 - `$PKG_DIR/values.yaml` carries the image reference inline, written by the build via `yq --inplace '.<key>.image = strenv(IMAGE)' values.yaml`.
 
 Resolve:
@@ -116,6 +114,8 @@ Concatenate the `body` fields into `/tmp/cozy-bump-changelog.md` with `## <tag>`
 If `gh release list` returns nothing for a project that uses tag-only releases (no GitHub Release objects), fall back to `git ls-remote --tags https://github.com/$UPSTREAM_OWNER/$UPSTREAM_REPO_NAME` plus reading `CHANGELOG.md` from the repo at each tag. If that also fails (sparse releases, no CHANGELOG), stop and ask the user where the changelog lives — never proceed without changelog evidence.
 
 ### Step 2 — Helm values diff (Pattern A only)
+
+Precondition: the upstream Helm repo must already be registered locally — Phase 3's target-version resolution does this via `helm repo add --force-update <name> <url>`. If the user jumped past Phase 3 (e.g. `--target-version` was supplied on the CLI), run `helm repo add` here before the `show values` calls.
 
 ```bash
 helm show values <repo-name>/<chart-name> --version $CURRENT_VERSION > /tmp/cozy-bump-values-current.yaml
@@ -199,6 +199,13 @@ Three options: `approve` / `edit <phase>` / `abort`.
 
 **Pattern B + `--no-deploy` interlock**: when `$BUMP_PATTERN = B` and `$NO_DEPLOY` is set, the plan gate must prompt explicitly for which Pattern B path (see Phase 6 Step 5) the user is taking — `local-build` (path 2, requires push credentials), `maintainer-handoff` (path 3, abort the commit), or `re-enable-deploy` (drop `--no-deploy`). Without an answer, refuse to proceed past Phase 5 — silently committing only `Chart.yaml.appVersion` while `values.yaml` retains the old digest is the failure mode this interlock prevents.
 
+**ExternalArtifact reality check (warn before approve)**: the cozystack platform operator creates **every** managed `HelmRelease` with `spec.chartRef.kind: ExternalArtifact` (verified against `cozystack/internal/operator/package_reconciler.go`). On any real cozystack cluster (anything past bootstrap), Flux pulls the chart from the platform-built artifact, not from your local checkout. This means:
+
+- **Pattern A chart-structure bumps**: Phase 9's local `make apply` cannot verify them on a real cluster. The chart must land in the platform's source-of-truth GitRepository and be rebuilt by the operator before Flux sees it. Phase 9 will detect this and explain the push-to-fork workflow rather than pretend to deploy.
+- **Pattern B image-only bumps**: Phase 9 can verify by suspending Flux and running `kubectl set image` (the local `values.yaml` digest is irrelevant to Flux; what runs in the pod is what matters).
+
+Surface this in the plan summary so the user knows whether Phase 9 will actually exercise their bump or whether it can only verify the image swap (Pattern B) / nothing (Pattern A on ExternalArtifact). The skill does not refuse — many bumps are correct after Phase 7 alone — but the user should approve Phase 5 with an honest expectation.
+
 Without this gate, the user only sees the bump as files start landing on disk. Always run it.
 
 ## Phase 6 — Apply bumps
@@ -215,23 +222,29 @@ Never touch `Chart.yaml.version` — it is the build-time placeholder `0.0.0`.
 
 ### Step 2 — Pull vendored chart updates (Pattern A)
 
-If the package has an `update` target (most do via `hack/package.mk`):
+The package's `make update` target (when present) hardcodes the upstream version inside the recipe — it is **not** parameterized by the environment. Examples in the current monorepo: `system/cilium/Makefile` pins `--version 1.19`, `system/kafka-operator/Makefile` pins `--version 0.45.1-rc1`, `system/opensearch-operator` and `system/postgres-operator` likewise. Calling `make update` blindly would re-fetch the **previous** version, leave `Chart.yaml.appVersion` correctly bumped from Step 1, but ship a `charts/<name>/` still at the old version. Phase 7 would pass against unchanged templates and Phase 8 would commit a lying bump.
 
-```bash
-make --directory $PKG_DIR update
-```
+Path:
 
-That target is the right one — it follows the cozystack convention of cleaning `charts/` before `helm pull`, so a renamed upstream sub-chart cannot leave the previous version stranded alongside the new one.
+1. Read `$PKG_DIR/Makefile` — find the line matching `helm pull .* --version <X>`.
+2. If a `--version <X>` is hardcoded, edit that line to `--version $TARGET_VERSION` via `sed --in-place` (or a targeted Edit). Surface the diff to the user before continuing.
+3. Run `make --directory $PKG_DIR update`. The target's pre-clean (`rm -rf charts/`) is preserved by editing the version literal only.
+4. If the Makefile has no `update` target, replicate the convention manually — the pre-clean step is non-negotiable:
 
-If there is no `update` target, replicate the convention manually — the **clean before pull** step is non-negotiable:
+   ```bash
+   rm -rf "$PKG_DIR/charts"/*
+   helm pull <repo-name>/<chart-name> --version $TARGET_VERSION \
+     --untar --untardir "$PKG_DIR/charts"
+   ```
 
-```bash
-rm -rf "$PKG_DIR/charts"/*
-helm pull <repo-name>/<chart-name> --version $TARGET_VERSION \
-  --untar --untardir "$PKG_DIR/charts"
-```
+5. **Self-check** (mandatory invariant): after the pull, verify
 
-After the pull, verify the new sub-chart directory exists and `Chart.yaml.version` matches `$TARGET_VERSION`. If multiple sub-chart directories remain in `charts/`, stop — that means the pre-clean was skipped or partial.
+   ```bash
+   [ "$(yq '.version' "$PKG_DIR/charts/<name>/Chart.yaml")" = "$TARGET_VERSION" ] \
+     || { echo "Pulled chart version does not match target — stopping"; exit 1; }
+   ```
+
+   If the result diverges from `$TARGET_VERSION`, stop and surface the actual pulled version. Do not proceed to Phase 7. If multiple sub-chart directories remain in `charts/`, stop — pre-clean failed.
 
 ### Step 3 — Apply the adaptation list
 
@@ -244,17 +257,16 @@ For each adaptation entry from Phase 4 Step 5:
 
 After every batch, re-run the relevant grep from Phase 4 Step 4 to confirm no straggler references remain.
 
-### Step 4 — Regenerate schema and ApplicationDefinition
+### Step 4 — Regenerate schema and ApplicationDefinition (when applicable)
 
-```bash
-make --directory $PKG_DIR generate
-```
+The `generate:` target is **not** universal — at time of writing it is defined in only ~30 of ~153 package Makefiles, almost exclusively under `packages/apps/*` (where each app has a sibling `system/<name>-rd/` ApplicationDefinition). For `packages/system/*` and `packages/core/*` packages this target typically does not exist, and most of those packages have no `values.schema.json` either (they are platform-managed, not exposed as CRDs).
 
-The `generate` target (defined per package, typically wrapping `cozyvalues-gen` + `hack/update-crd.sh`) rebuilds:
-- `values.schema.json`
-- The corresponding `packages/system/<name>-rd/cozyrds/<name>.yaml` ApplicationDefinition (when this package has one).
+Path:
 
-If the package has no `generate` target, skip — but verify `values.schema.json` exists and is consistent with the new `values.yaml`. If it diverges, stop and ask.
+1. Check whether the target exists: `make --directory "$PKG_DIR" --question generate >/dev/null 2>&1; echo $?`. Exit 1 from `--question` means "target exists but is out of date" (run it). Exit 2 means "no such target" (skip without warning). Exit 0 means up-to-date (run anyway — bumps almost always change `values.yaml`).
+2. If exists: `make --directory $PKG_DIR generate`. This rebuilds `values.schema.json` and the corresponding `packages/system/<name>-rd/cozyrds/<name>.yaml` ApplicationDefinition.
+3. If not exists: skip silently. Do not warn about a missing schema for `system/*`/`core/*` packages.
+4. Record `$RD_DIR_CHANGED` for Phase 8: after `generate` (or its skip), run `git -C "$REPO_ROOT" status --porcelain packages/system/ | grep --extended-regexp '/<name>-rd/' || true` and capture the result. Phase 8 uses this to decide what extra paths to `git add`.
 
 ### Step 5 — Image-build packages (Pattern B)
 
@@ -280,7 +292,7 @@ Hard gates. If any fails, **stop and report**, do not commit, do not deploy.
 ```bash
 helm template $PKG_DIR --output-dir /tmp/cozy-bump-template-out
 helm lint $PKG_DIR
-git -C <repo-root> diff --stat $PKG_DIR
+git -C "$REPO_ROOT" diff --stat $PKG_DIR
 ```
 
 Show the user:
@@ -312,14 +324,34 @@ The `Assisted-By: Claude` trailer is mandatory per the cozystack project commit 
 Run:
 
 ```bash
-cd <repo-root>
-git add $PKG_DIR
-# Include sibling files generated by Phase 6 Step 4:
-git add packages/system/<name>-rd/  # only if it changed
-git commit --signoff
+COMMIT_MSG=$(mktemp -t cozy-bump-msg.XXXXXX)
+trap 'rm -f "$COMMIT_MSG"' EXIT
+cat > "$COMMIT_MSG" <<EOF
+chore(packages/$PKG_TYPE/$PKG_NAME): bump $PKG_NAME to $TARGET_VERSION
+
+<changelog summary>
+
+Adaptations:
+- ...
+
+Assisted-By: Claude <noreply@anthropic.com>
+EOF
+
+git -C "$REPO_ROOT" add "$PKG_DIR"
+# Phase 6 Step 4 set $RD_DIR_CHANGED if make generate emitted into a sibling -rd dir.
+# Re-derive defensively here in case the user touched something else:
+git -C "$REPO_ROOT" status --porcelain packages/system/ |
+  awk '/-rd\// {print $2}' |
+  xargs --no-run-if-empty git -C "$REPO_ROOT" add
+
+git -C "$REPO_ROOT" commit --signoff --file "$COMMIT_MSG"
 ```
 
-Do **not** pass `--message` directly when the commit body is multi-line — write it to a temp file and use `git commit --signoff --file <path>` so the body lands verbatim.
+Why a tempfile rather than `--message`: multi-line bodies via `--message "<<EOF…EOF"` are fragile under shell escaping (backticks, dollar signs, single quotes). The tempfile approach lets the body land verbatim and is cleaned up by the `trap` regardless of exit path.
+
+Why `git -C "$REPO_ROOT"` instead of `cd <repo-root>`: portable across BSD/GNU shells, no implicit working-directory side effects on the caller. `git -C` is the canonical short form — the long form `--directory` does not exist for `git`. Do not try to "fix" this to a long flag.
+
+`git -C "$REPO_ROOT" status --porcelain packages/system/ | awk '/-rd\// {print $2}'` derives any sibling `-rd/` paths the user does not already have staged — covers both the `apps/<name>` → `system/<name>-rd/` mapping (most common) and any hand-edits the user made there.
 
 GPG signing:
 - Respect `commit.gpgsign`. Never use `--no-gpg-sign`. Never use `-c commit.gpgsign=false`.
@@ -337,7 +369,12 @@ Skip this phase entirely when `--no-deploy` was passed or the user declined Phas
 
 Ask via `AskUserQuestion`:
 
-> Deploy this bump to a real cluster for verification? Current kubectl context: `$KUBE_CONTEXT`. (Recommended — exercises the change end-to-end and surfaces issues local checks won't catch.)
+> Deploy this bump to a real cluster for verification? Current kubectl context: `$KUBE_CONTEXT`.
+>
+> What Phase 9 can actually verify on a real cozystack cluster (where every HelmRelease is `chartRef.kind: ExternalArtifact`):
+> - **Pattern B (image-only)**: yes — Phase 9 will rebuild the image, suspend Flux, and `kubectl set image` the running pods.
+> - **Pattern A (chart-structure)**: no — Flux ignores local `values.yaml`; the bump must land in the source-of-truth GitRepository first. Phase 9 will explain a push-to-fork workaround instead of pretending to deploy.
+> - **Pattern C (postgres-style enum)**: depends on whether the bumped pattern is image-shaped or chart-shaped — the skill will branch accordingly.
 >
 > Options: `yes` / `no` / `dry-run` (print every command without executing) / `pick-context` (choose a different context first).
 
@@ -384,53 +421,66 @@ kubectl --context $KUBE_CONTEXT --namespace $NAMESPACE get helmrelease $RELEASE 
   --output jsonpath='{.spec.chartRef.kind}{"\t"}{.spec.suspend}{"\n"}'
 ```
 
-Three outcomes:
+Outcomes (in order of frequency on real cozystack clusters):
 
-- **HelmChart** (or empty `chartRef.kind` with inline `chart`): the release reads its chart from the cozystack source tree. Local `make apply` will apply the bumped chart. Go to Step 5A.
-- **ExternalArtifact**: the release reads from a Flux-built artifact pushed to the cluster — local `values.yaml` changes are ignored by Flux. Go to Step 5B.
-- **NotFound**: the release has not been installed yet on this cluster. Ask the user whether to install fresh (`make apply`) or pick a different context. If install fresh, treat as the HelmChart path.
+- **ExternalArtifact** — the rule. The cozystack platform operator creates every managed HelmRelease this way. Go to Step 5 ExternalArtifact branch.
+- **HelmChart** / inline `chart` — uncommon. Only happens on bootstrap before the operator reconciled, on a kind cluster used purely for chart-syntax testing, or on a release the user installed by hand. Go to Step 5 inline branch.
+- **NotFound** — the release has not been installed yet on this cluster. Ask the user whether to install fresh (`make apply`, treat as inline-chart) or pick a different context.
 
-### Step 5A — Inline chart deploy
+### Step 5 — Deploy by shape × pattern
 
-```bash
-make --directory $PKG_DIR apply NAMESPACE=$NAMESPACE NAME=$RELEASE
-```
+#### ExternalArtifact + Pattern B (image-only) — primary path
 
-The `apply` target in `hack/package.mk` is `apply: check suspend` followed by `cozyhr apply -n $(NAMESPACE) $(NAME)`. So suspend is automatic — no need to call `cozyhr suspend` separately for this path.
-
-If the package has a `make image` target AND the bump pattern is B (in-repo image build), build and push the image first, then run `make apply`:
+Flux ignores local `values.yaml`; the chart on the cluster is whatever the platform operator built. But the running pods can be reimaged directly:
 
 ```bash
-# Generate ephemeral registry once per cozy-bump session
+cozyhr --context $KUBE_CONTEXT suspend --namespace $NAMESPACE $RELEASE
+
+# Generate an ephemeral registry once per cozy-bump session (24h TTL).
 if [ -z "$REGISTRY" ]; then
   UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
   REGISTRY="ttl.sh/$UUID"
   echo "Using ephemeral registry: $REGISTRY (24h TTL — image will expire)"
 fi
-TAG="bump-$TARGET_VERSION-$(TZ=UTC date +%Y%m%d-%H%M%S)"  # TZ=UTC instead of --utc / -u for BSD+GNU portability
+TAG="bump-$TARGET_VERSION-$(TZ=UTC date +%Y%m%d-%H%M%S)"  # TZ=UTC over --utc/-u for BSD+GNU portability
 
 REGISTRY=$REGISTRY TAG=$TAG PLATFORM=linux/amd64 PUSH=1 \
   make --directory $PKG_DIR image
-# image target writes the resulting digest into $PKG_DIR/values.yaml via yq --inplace.
+# The image target writes <reg>:<tag>@sha256:<digest> back into $PKG_DIR/values.yaml.
 
+# Read the digest the build just wrote, then patch the live workload(s):
+NEW_IMAGE=$(yq '.<key>.image' "$PKG_DIR/values.yaml")
+# enumerate workloads owned by the release (see selector derivation in Step 6)
+kubectl --context $KUBE_CONTEXT --namespace $NAMESPACE set image \
+  <kind>/<name> <container>="$NEW_IMAGE"
+```
+
+The `make image` rewrite of `values.yaml` is **transient** — Step 7 will revert it before the Phase 8 commit. Shipping a `ttl.sh/...` reference in a commit would expire in 24h.
+
+#### ExternalArtifact + Pattern A (chart-structure) — push-to-fork handoff
+
+Phase 9 cannot deploy chart-structure changes on this cluster. Stop and explain:
+
+> This release is backed by an ExternalArtifact. Flux reconciles the chart from the cozystack platform's source-of-truth GitRepository, not from your local checkout. To verify the bump on a real cluster:
+>
+> 1. Push the bump branch to a fork of cozystack/cozystack you control.
+> 2. Edit the cluster's `cozystack-system` GitRepository (or equivalent) `spec.url` and `spec.ref.branch` to point at your fork temporarily.
+> 3. Wait for Flux to reconcile, then watch the workloads roll out.
+> 4. Once verified, restore the original GitRepository spec and submit the bump as a PR.
+>
+> Alternatively, replicate the change as a temporary inline `HelmRelease` overlay outside cozy-bump's scope.
+
+Do not attempt either path automatically — both modify shared cluster state.
+
+#### Inline chart (any pattern) — uncommon path
+
+```bash
 make --directory $PKG_DIR apply NAMESPACE=$NAMESPACE NAME=$RELEASE
 ```
 
-Note that the `make image` target rewrites `values.yaml` with the new `ttl.sh/...` digest. That edit is **transient** — Phase 9 Step 7 will offer to revert it, since shipping a `ttl.sh` reference in a commit would expire after 24h.
+The `apply` target in `hack/package.mk` is `apply: check suspend` followed by `cozyhr apply -n $(NAMESPACE) $(NAME)`. So suspend is automatic — no separate `cozyhr suspend` needed.
 
-### Step 5B — ExternalArtifact deploy
-
-Local `values.yaml` is ignored by Flux for this release. Two cases:
-
-- **Image-only bump (Pattern B)**: suspend Flux, then `kubectl set image`:
-  ```bash
-  cozyhr --context $KUBE_CONTEXT suspend --namespace $NAMESPACE $RELEASE
-  kubectl --context $KUBE_CONTEXT --namespace $NAMESPACE set image \
-    deployment/<deploy-name> <container>=<full-image-with-digest>
-  ```
-  The `<deploy-name>` and `<container>` come from `kubectl --context $KUBE_CONTEXT --namespace $NAMESPACE get deployment --output name` plus `kubectl --context $KUBE_CONTEXT --namespace $NAMESPACE get deployment <deploy-name> --output jsonpath='{.spec.template.spec.containers[*].name}'` — surface the candidates and let the user pick if more than one matches.
-- **Chart-structure bump (Pattern A or any template/values change)**: stop. The bumped chart needs to land in the source-of-truth repo (`cozystack-system` GitRepository, typically) before Flux will see it. Tell the user:
-  > This release is backed by an ExternalArtifact. Local `values.yaml` changes won't reach the cluster. To verify on a dev cluster, push the bump branch to your fork, point the cluster's GitRepository at the fork temporarily, and let Flux reconcile. Alternatively, replicate the change as a temporary inline `HelmRelease` overlay — out of scope for `cozy-bump`.
+If Pattern B and the image must rebuild before apply, run the image build first (same `make image` invocation as the ExternalArtifact + Pattern B path above), then `make apply`. The same `ttl.sh` revert applies in Step 7.
 
 ### Step 6 — Watch rollout
 
@@ -445,11 +495,14 @@ while read -r workload; do
 done
 ```
 
-`rollout status` accepts `kind/name` for both Deployment and StatefulSet (and DaemonSet). On failure, stream pod logs:
+`rollout status` accepts `kind/name` for both Deployment and StatefulSet (and DaemonSet). On failure, stream pod logs by reading the workload's actual selector — Helm 3 does **not** inject standard labels (`app.kubernetes.io/instance` and friends) automatically; only what each chart's templates explicitly set. Many cozystack `system/*` packages set none. Derive the selector from the failing workload itself:
 
 ```bash
+SELECTOR=$(kubectl --context $KUBE_CONTEXT --namespace $NAMESPACE \
+  get "$workload" --output go-template='{{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}' |
+  sed 's/,$//')
 kubectl --context $KUBE_CONTEXT --namespace $NAMESPACE logs \
-  --selector app.kubernetes.io/instance=$RELEASE --tail=200 --all-containers
+  --selector "$SELECTOR" --tail=200 --all-containers
 ```
 
 Surface errors verbatim. Do not auto-recover.
