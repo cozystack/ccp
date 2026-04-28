@@ -253,6 +253,127 @@ Restore from backup. There is no clean in-cluster recovery for a deleted `cozy-s
 3. Re-apply the Platform Package from rescue.yaml (manual review required; CRD schemas may have moved).
 4. Expect tenant disruption; communicate to users.
 
+## 8. KubeVirt 1.6.x → 1.8.x: live-migration of pre-existing VMs fails on `virtio-net`
+
+### Symptom
+
+After the Cozystack upgrade rolls out a new KubeVirt version that crosses the QEMU bump boundary (specifically 1.6.x → 1.7+), every live-migration that KubeVirt's `workloadUpdateMethods` triggers fails with:
+
+```text
+virError(Code=9, Domain=10, Message='operation failed: job 'migration in' failed:
+  load of migration failed: Operation not permitted')
+qemu-kvm: error while loading state for instance 0x0 of device '0000:00:02.0:00.0/virtio-net'
+```
+
+`kubectl get vmim -A` shows a growing pile of `Failed` evacuations on every running VM. KubeVirt keeps retrying — VMs stay up but the migration loop never converges.
+
+### Root cause
+
+[kubevirt/kubevirt#16386](https://github.com/kubevirt/kubevirt/issues/16386). When KubeVirt is upgraded across a QEMU version bump (e.g. `qemu-9.1.0-19.el9` → `qemu-9.1.0-20.el9`), VMs that were running before the upgrade have an in-memory device state tied to the old QEMU. The new QEMU can't reload that state for some devices (notably `virtio-net`) → migration `in` fails with `Operation not permitted`.
+
+This is **not** specific to network/storage configuration. It affects every VM that started under the old QEMU and never restarted. New VMs and VMs restarted after the upgrade are unaffected.
+
+Switching `workloadUpdateMethods` to `[Evict]` does **not** help — the `virt-launcher-eviction-interceptor` webhook converts evictions back into live-migrations because VMIs have `evictionStrategy: LiveMigrate` (an immutable field on a running VMI).
+
+### Recovery / workaround
+
+The only fix is to cold-restart every VM that was running before the upgrade — that re-initialises its in-memory state under the new QEMU. The procedure below disables the operator's auto-migration before the upgrade so it doesn't trigger a flapping loop, then restarts VMs in a controlled, paced sequence.
+
+**Run this before the `helm upgrade` (Step 5 of the main skill) when the target version crosses KubeVirt 1.6.x → 1.8.x.**
+
+```bash
+# 1. Snapshot baseline so you can verify what changed
+kubectl get vmi -A -o wide > /tmp/vmis-pre-upgrade.txt
+kubectl get pods -l kubevirt.io=virt-launcher -A \
+  -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.containers[?(@.name=="compute")].image}{"\n"}{end}' \
+  > /tmp/launchers-pre-upgrade.txt
+kubectl -n cozy-kubevirt get kubevirt kubevirt -o yaml > /tmp/kubevirt-pre.yaml
+
+# 2. Disable workloadUpdateMethods so the new operator doesn't auto-migrate every VM
+kubectl -n cozy-kubevirt patch kubevirt kubevirt --type=merge \
+  -p '{"spec":{"workloadUpdateStrategy":{"workloadUpdateMethods":[]}}}'
+
+# 3. Suspend the kubevirt HelmRelease so Flux doesn't reconcile
+#    workloadUpdateMethods back from the chart values
+kubectl -n cozy-kubevirt patch hr kubevirt --type=merge \
+  -p '{"spec":{"suspend":true}}'
+
+# 4. Verify both took effect
+kubectl -n cozy-kubevirt get kubevirt kubevirt \
+  -o jsonpath='{.spec.workloadUpdateStrategy.workloadUpdateMethods}{"\n"}'
+# expected: []
+
+# 5. NOW run helm upgrade for cozystack (Step 5 of the main skill).
+#    The control plane (virt-api/controller/handler/operator) will roll over to
+#    v1.8.x. Existing virt-launcher pods are NOT touched, so VMs keep running
+#    on the old QEMU. Live-migration BETWEEN two old launchers still works.
+```
+
+After the upgrade reaches `Ready=True`, do the phased cold-restart:
+
+```bash
+# 6. Build the worklist of VMIs to restart. Excludes any that the operator
+#    must leave alone (replace EXCLUDED_NS as needed).
+EXCLUDED_NS=tenant-edoors      # comma-separated if more than one; adjust grep below
+kubectl get vmi -A --no-headers \
+  | awk -v ex="$EXCLUDED_NS" '
+      BEGIN { n=split(ex,e,","); for (i in e) skip[e[i]]=1 }
+      $4 == "Running" && !($1 in skip) { print $1"/"$2 }' \
+  > /tmp/vms-to-restart.txt
+wc -l /tmp/vms-to-restart.txt
+
+# 7. Restart each VMI in turn at 30s spacing. delete pod → VMI controller
+#    creates a new launcher on the now-current image. Per-VM downtime ~30-60s.
+while read entry; do
+  ns="${entry%%/*}"
+  vmi="${entry##*/}"
+  pod=$(kubectl -n "$ns" get pods -l kubevirt.io=virt-launcher,vm.kubevirt.io/name="$vmi" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  if [ -n "$pod" ]; then
+    echo "$(date +%H:%M:%S) restart $ns/$vmi (pod $pod)"
+    kubectl -n "$ns" delete pod "$pod" --wait=false
+  fi
+  sleep 30
+done < /tmp/vms-to-restart.txt
+```
+
+**Pacing.** 30s spacing × N VMs = total wall time. For 161 VMs that's ~85 min. Tighter spacing risks storage IO surges (DRBD/LINSTOR resyncs). Loosen if storage is hot, tighten if maintenance window is short.
+
+After the loop:
+
+```bash
+# 8. Verify everything landed on the new launcher image
+kubectl get pods -l kubevirt.io=virt-launcher -A \
+  -o jsonpath='{range .items[*]}{.spec.containers[?(@.name=="compute")].image}{"\n"}{end}' \
+  | sort | uniq -c
+# expected: only excluded VMs (if any) remain on the old image
+
+# 9. Confirm no VMI is wedged
+kubectl get vmi -A --no-headers \
+  | awk '$4 != "Running" && $4 != "Pending"'
+```
+
+### Steady state
+
+If any VMs were intentionally skipped (e.g. tenants who couldn't take downtime in this window), leave `workloadUpdateMethods` empty until those VMs are restarted naturally. Once the cluster is uniformly on the new launcher image:
+
+```bash
+kubectl -n cozy-kubevirt patch hr kubevirt --type=merge \
+  -p '{"spec":{"suspend":false}}'
+
+kubectl -n cozy-kubevirt patch kubevirt kubevirt --type=merge \
+  -p '{"spec":{"workloadUpdateStrategy":{"workloadUpdateMethods":["LiveMigrate","Evict"]}}}'
+```
+
+### Coordination with the user
+
+Before starting, communicate clearly:
+
+- Every VM (except explicit opt-outs) will get **one** ~30-60s downtime during the restart loop.
+- The order is alphabetical by namespace; rough ETA is ~30s per VM.
+- Tenants with HA workloads on top of single VMIs (e.g. single-replica databases) should be warned individually if their app can't tolerate a brief restart.
+- Tenants who need to defer should be added to the exclusion list; their VM will keep running on the old QEMU until they restart it themselves.
+
 ## Diagnostic quick reference
 
 | Question | Command |
