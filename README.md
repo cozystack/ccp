@@ -27,6 +27,7 @@ Install a plugin:
 | **cozy-external-app** | Scaffold a new Cozystack external app package with dependency integration |
 | **drbd-recovery** | Diagnose and recover DRBD/LINSTOR storage issues in Kubernetes clusters |
 | **cozystack-upgrade** | Guided upgrade of a running Cozystack v1.x cluster to a newer v1.x patch or minor version |
+| **cozy-bump** | Bump a cozystack monorepo package — reads upstream changelog, adapts to breaking changes, regenerates schema, optionally deploys to a dev cluster |
 
 ## License
 

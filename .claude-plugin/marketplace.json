@@ -30,6 +30,12 @@
       "description": "Guided upgrade of a running Cozystack v1.x cluster to a newer v1.x patch or minor version — release-notes analysis, prechecks, stop gates, helm upgrade, targeted post-upgrade verification, known failure recovery",
       "source": "./skills/cozystack-upgrade",
       "category": "infrastructure"
+    },
+    {
+      "name": "cozy-bump",
+      "description": "Bump a cozystack monorepo package — reads upstream changelog, adapts to breaking changes, regenerates schema, optionally deploys to a dev cluster",
+      "source": "./skills/cozy-bump",
+      "category": "infrastructure"
     }
   ]
 }
