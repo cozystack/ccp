@@ -5,7 +5,7 @@ description: Use when upgrading a running Cozystack v1.x cluster to a newer v1.x
 
 # Cozystack Upgrade
 
-Guided upgrade of a running Cozystack v1.x cluster. Source of truth: `https://cozystack.io/docs/v1/operations/cluster/upgrade/`.
+Guided upgrade of a running Cozystack v1.x cluster. Source of truth: `https://cozystack.io/docs/<vX.Y>/operations/cluster/upgrade/` (substitute the version selector value matching your target — e.g. `v1.3`).
 
 ## Core principle
 
@@ -96,11 +96,14 @@ kubectl annotate configmap -n cozy-system cozystack-version helm.sh/resource-pol
 ```bash
 helm upgrade cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer \
   --version X.Y.Z \
-  --namespace cozy-system \
-  --reuse-values
+  --namespace cozy-system
 ```
 
-`--reuse-values` preserves cluster settings. Omit only if deliberately changing values (then pass `-f values.yaml` and review the resulting Package spec first).
+**Do not use `--reuse-values`.** The `cozy-installer` chart pins the platform OCI repository in its default values; reusing old values would point the new operator at old package versions. Inspect the currently-installed user-overrides first, then re-apply only the ones the user actually set, explicitly with `--set` (e.g. `--set disableTelemetry=true`):
+
+```bash
+helm get values cozystack -n cozy-system
+```
 
 ### Step 6 — Monitor
 
@@ -148,7 +151,7 @@ High-blast-radius stuck states — stuck helm `uninstalling`, Kamaji datastore c
 
 - Skipping release-notes analysis → regressions in changed areas go unseen.
 - Upgrading while HRs are suspended → those stay on old chart versions silently.
-- `helm upgrade` without `--reuse-values` → drops cluster-specific settings.
+- `helm upgrade` with `--reuse-values` → operator keeps pointing at old package versions (chart pins OCI repo). Extract user overrides via `helm get values` and pass them with `--set` instead.
 - Patching `Tenant/*.spec.etcd=false` to "clean up" → removes tenant etcd, breaks child kube clusters. See known-failures #2.
 - Deleting helm release secrets without suspending the HR first → helm-controller races with you.
 - Installing a pre-release in production without explicit user direction.
@@ -156,7 +159,7 @@ High-blast-radius stuck states — stuck helm `uninstalling`, Kamaji datastore c
 ## References
 
 - Skill files: `references/release-notes-analysis.md`, `references/preflight-checks.md`, `references/post-upgrade-checks.md`, `references/rollback.md`, `references/known-failures.md`
-- Upstream: `https://cozystack.io/docs/v1/operations/cluster/upgrade/`
-- Troubleshooting checklist: `https://cozystack.io/docs/v1/operations/troubleshooting/#troubleshooting-checklist`
+- Upstream (pick the version matching your target from the docs site version selector): `https://cozystack.io/docs/<vX.Y>/operations/cluster/upgrade/`
+- Troubleshooting checklist: `https://cozystack.io/docs/<vX.Y>/operations/troubleshooting/`
 - Releases: `https://github.com/cozystack/cozystack/releases`
 - Readiness script: `<cozystack-repo>/hack/check-readiness.sh`
