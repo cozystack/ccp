@@ -23,3 +23,10 @@ Registry: `.claude-plugin/marketplace.json`
 3. Add content files (SKILL.md, agent .md, .mcp.json, or hooks.json)
 4. Register in `.claude-plugin/marketplace.json`
 5. Update README.md
+
+## Modifying an Existing Plugin
+
+Any change under `agents/<name>/`, `hooks/<name>/`, `mcp/<name>/`, or `skills/<name>/`
+must come with a bump to `.version` in that plugin's `.claude-plugin/plugin.json`
+(semver: patch for fixes, minor for additions, major for breaking changes).
+The `Check plugin version bump` GitHub Actions workflow enforces this on every PR.

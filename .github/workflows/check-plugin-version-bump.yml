@@ -1,0 +1,84 @@
+name: Check plugin version bump
+
+on:
+  pull_request:
+    paths:
+      - 'agents/**'
+      - 'hooks/**'
+      - 'mcp/**'
+      - 'skills/**'
+
+jobs:
+  check-version-bump:
+    name: Plugin version bumped
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify each modified plugin bumped its version
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # A plugin lives at <category>/<name>/ where <category> is one of
+          # the directories scoped by `on.pull_request.paths` above, and its
+          # manifest is <category>/<name>/.claude-plugin/plugin.json.
+          mapfile -t changed_files < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          declare -A plugins=()
+          for f in "${changed_files[@]}"; do
+            case "$f" in
+              agents/*/*|hooks/*/*|mcp/*/*|skills/*/*)
+                category="${f%%/*}"
+                name="$(printf '%s' "$f" | cut -d/ -f2)"
+                plugins["$category/$name"]=1
+                ;;
+            esac
+          done
+
+          if [ ${#plugins[@]} -eq 0 ]; then
+            echo "No plugin files changed — nothing to check."
+            exit 0
+          fi
+
+          # head > base under `sort -V` (version sort).
+          version_gt() {
+            local v1="$1" v2="$2"
+            [ "$v1" != "$v2" ] \
+              && [ "$(printf '%s\n%s\n' "$v1" "$v2" | sort -V | tail -n1)" = "$v1" ]
+          }
+
+          failed=0
+          for plugin_dir in "${!plugins[@]}"; do
+            manifest="$plugin_dir/.claude-plugin/plugin.json"
+
+            head_version="$(git show "$HEAD_SHA:$manifest" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)"
+            base_version="$(git show "$BASE_SHA:$manifest" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)"
+
+            if [ -z "$head_version" ]; then
+              echo "::error file=$manifest::missing or invalid .version in $manifest on HEAD"
+              failed=1
+              continue
+            fi
+
+            if [ -z "$base_version" ]; then
+              echo "✓ $plugin_dir: new plugin ($head_version) — skipping bump check"
+              continue
+            fi
+
+            if [ "$head_version" = "$base_version" ]; then
+              echo "::error file=$manifest::$plugin_dir was modified but $manifest version is still $head_version — bump it (semver: patch for fixes, minor for additions, major for breaking changes)."
+              failed=1
+            elif ! version_gt "$head_version" "$base_version"; then
+              echo "::error file=$manifest::$plugin_dir version went $base_version → $head_version (not greater); bump must increase the version."
+              failed=1
+            else
+              echo "✓ $plugin_dir: $base_version → $head_version"
+            fi
+          done
+
+          exit $failed
