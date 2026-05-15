@@ -146,6 +146,15 @@ High-blast-radius stuck states — stuck helm `uninstalling`, Kamaji datastore c
 | HR `UninstallFailed, failed to delete release` | Stuck helm history (known-failures #1) |
 | TCP `INSTALLED VERSION` diverges from `VERSION` | Kamaji upgrade stuck (known-failures #4) |
 | `cozy-system` namespace gone | Missing `helm.sh/resource-policy=keep` (known-failures #7); restore from backup |
+| Mass `kubevirt-evacuation-*` VMIMs in `Failed`, `qemu-kvm: error while loading state ... virtio-net` | KubeVirt upgrade crossed the QEMU bump (1.6.x → 1.7+); pre-existing VMs need cold-restart (known-failures #8) |
+
+## KubeVirt 1.6.x → 1.8.x special handling
+
+If Step 1's release-notes analysis shows the target Cozystack version bumps KubeVirt from 1.6.x to 1.7+ (currently 1.8.2 in `release-1.4`), live-migration of every running VM will fail until those VMs are cold-restarted. This is [kubevirt/kubevirt#16386](https://github.com/kubevirt/kubevirt/issues/16386).
+
+**Apply the pre-/post-upgrade workflow in `references/known-failures.md` #8 before and after `helm upgrade`.** It disables `workloadUpdateMethods` first so the operator doesn't trigger a flapping evacuation loop, then drives a paced cold-restart of all running VMs.
+
+Coordinate with VM owners ahead of time: every VM (except explicit opt-outs) gets one ~30-60s downtime during the restart loop. Tenants who can't take that window should be added to the exclusion list; their VMs will keep running on the old QEMU until they restart them themselves.
 
 ## Common mistakes
 
