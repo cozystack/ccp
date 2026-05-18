@@ -1,9 +1,0 @@
-{
-  "name": "cozy-bump",
-  "version": "1.0.0",
-  "description": "Bump a cozystack monorepo package — detects upstream source, fetches changelog between current and target versions, surfaces breaking changes / deprecations / new required keys, adapts values.yaml and templates, regenerates schema and ApplicationDefinition, runs helm template + lint, commits with Conventional-Commit message, and optionally deploys to a dev cluster via cozyhr suspend + make apply with ttl.sh ephemeral image registry",
-  "author": {
-    "name": "Cozystack",
-    "url": "https://github.com/cozystack"
-  }
-}
