@@ -1,9 +1,0 @@
-{
-  "name": "drbd-recovery",
-  "version": "1.0.0",
-  "description": "Diagnose and recover DRBD/LINSTOR storage issues in Kubernetes clusters — handles StandAlone, DELETING, Inconsistent, Diskless, quorum loss, bitmap errors, and other common failure modes. Use when `linstor r l --faulty` shows broken resources or nodes have `drbd.linbit.com/lost-quorum` taints.",
-  "author": {
-    "name": "Cozystack",
-    "url": "https://github.com/cozystack"
-  }
-}

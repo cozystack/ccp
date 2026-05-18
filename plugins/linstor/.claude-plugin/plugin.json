@@ -1,0 +1,9 @@
+{
+  "name": "linstor",
+  "version": "1.0.0",
+  "description": "LINSTOR / DRBD operations bundle for Kubernetes. Skills, invoked as linstor:<name>: recover (diagnose and recover broken DRBD resources — handles StandAlone, DELETING, Inconsistent, Diskless, quorum loss, bitmap errors, and other common failure modes). Useful on any Kubernetes cluster that runs piraeus-operator / LINSTOR, not just on Cozystack.",
+  "author": {
+    "name": "Cozystack",
+    "url": "https://github.com/cozystack"
+  }
+}

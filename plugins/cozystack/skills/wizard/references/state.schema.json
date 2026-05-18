@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/cozystack/ccp/plugins/cozystack/skills/wizard/references/state.schema.json",
+  "title": ".state.yaml — Cozystack wizard chain state",
+  "description": "Single source of truth for what each skill in the chain reads and writes. Lives at <config-dir>/.state.yaml. See state-schema.md for narrative descriptions of each section's purpose; this schema is the machine-readable contract.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["created_at", "session_id", "config_dir", "target", "route"],
+  "properties": {
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC. Written once by wizard Phase 1."
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}-[0-9]{6}$",
+      "description": "Filename-friendly UTC timestamp (YYYYMMDD-HHMMSS)."
+    },
+    "config_dir": {
+      "type": "string",
+      "description": "Absolute path. Written by wizard Phase 1."
+    },
+    "operator_language": {
+      "type": "string",
+      "pattern": "^[a-z]{2}(-[A-Z]{2})?$",
+      "description": "ISO 639-1 language code (optional region). Detected from Phase 0 free-form answer."
+    },
+    "intent_summary": {
+      "type": "string",
+      "description": "Free-form recap from wizard Phase 0."
+    },
+    "intent_hints": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Parsed key/value pairs extracted from Phase 0. Open-ended — any structured key the operator's free-form maps to is fair game.",
+      "properties": {
+        "target": { "enum": ["bare-metal-talos", "bare-metal-ubuntu", "existing"] },
+        "node_count": { "type": "integer", "minimum": 1 },
+        "platform": { "enum": ["oci", "hetzner", "aws-with-eip", "gcp-with-nat", "bare-metal", "other"] },
+        "reach_mode": { "enum": ["public", "internal", "vip"] },
+        "needs_os_install": { "type": "boolean" },
+        "cp_endpoint": { "type": "string" },
+        "vip": {
+          "type": "object",
+          "properties": {
+            "address": { "type": "string", "format": "ipv4" },
+            "link": { "type": "string" },
+            "subnet": { "type": "string" },
+            "mtu": { "type": "integer" },
+            "per_node": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "format": "ipv4" }
+            }
+          }
+        }
+      }
+    },
+    "target": {
+      "enum": ["bare-metal-talos", "bare-metal-ubuntu", "existing"]
+    },
+    "route": {
+      "type": "array",
+      "items": { "enum": ["talos-bootstrap", "ubuntu-bootstrap", "cluster-install"] },
+      "minItems": 1
+    },
+    "sops": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "recipients": { "type": "array", "items": { "type": "string" } },
+        "config_path": { "type": "string" }
+      },
+      "required": ["enabled"]
+    },
+    "inventory": {
+      "type": "object",
+      "properties": {
+        "ssh_user": { "type": "string" },
+        "ssh_key": { "type": "string" },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["host", "role"],
+            "properties": {
+              "host": { "type": "string" },
+              "internal_ip": { "type": "string" },
+              "public_ip": { "type": "string" },
+              "role": { "enum": ["cp", "worker"] },
+              "name": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "properties": {
+        "context": { "type": "string" },
+        "kubeconfig": { "type": "string" },
+        "api_endpoint": { "type": "string" },
+        "distribution": { "enum": ["k3s", "talos", "kubeadm", "rke2", "managed-eks", "managed-gke", "managed-aks", "managed-doks", "other"] },
+        "k8s_version": { "type": "string" },
+        "talos_version": { "type": "string" },
+        "vip": {
+          "type": "object",
+          "properties": {
+            "shared_address": { "type": "string", "format": "ipv4" },
+            "link": { "type": "string" },
+            "subnet": { "type": "string" },
+            "per_node": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "format": "ipv4" }
+            }
+          }
+        }
+      }
+    },
+    "cozystack_intake": {
+      "type": "object",
+      "description": "Operator's policy decisions collected by wizard Phase 4. Read by cluster-install Phase 4 to skip re-prompting.",
+      "properties": {
+        "bundles": {
+          "type": "array",
+          "items": { "enum": ["system", "paas", "iaas", "naas"] }
+        },
+        "installer_variant": { "enum": ["generic", "talos", "hosted"] },
+        "platform_variant": { "enum": ["default", "isp-full", "isp-full-generic", "isp-hosted"] },
+        "storage_pref": {
+          "type": "object",
+          "properties": {
+            "layout_per_node": {
+              "type": "object",
+              "additionalProperties": { "enum": ["single", "mirror", "raidz"] }
+            },
+            "zpool_name": { "type": "string" },
+            "linstor_pool_name": { "type": "string" }
+          }
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "pod_cidr": { "type": "string" },
+            "service_cidr": { "type": "string" },
+            "join_cidr": { "type": "string" },
+            "defaults_source": { "type": "string" }
+          }
+        },
+        "publishing": {
+          "type": "object",
+          "properties": {
+            "host": { "type": "string" },
+            "host_kind": { "enum": ["nip.io", "custom-fqdn"] },
+            "domain_ownership_confirmed": { "type": "boolean" },
+            "cert_solver": { "enum": ["http01", "dns01"] },
+            "exposed_services": {
+              "type": "array",
+              "items": { "enum": ["api", "dashboard", "vm-exportproxy", "cdi-uploadproxy"] }
+            },
+            "api_server_endpoint": { "type": "string" }
+          }
+        },
+        "external_ips": {
+          "type": "object",
+          "properties": {
+            "strategy": { "enum": ["internal", "external", "explicit"] },
+            "explicit": { "type": "array", "items": { "type": "string" } },
+            "reason": { "type": "string" }
+          },
+          "required": ["strategy"]
+        },
+        "extractedprism": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "api_host_override": { "type": "string" }
+          }
+        }
+      }
+    },
+    "cozystack": {
+      "type": "object",
+      "description": "Discovery + execution outcome written by cluster-install.",
+      "properties": {
+        "installer_variant": { "enum": ["generic", "talos", "hosted"] },
+        "installer_version": { "type": "string", "description": "Canonical git-tag form, e.g. v1.3.3. cluster-install strips the v before passing to OCI helm --version." },
+        "platform_variant": { "enum": ["default", "isp-full", "isp-full-generic", "isp-hosted"] },
+        "bundles": { "type": "array", "items": { "type": "string" } },
+        "api_server_host": { "type": "string" },
+        "api_server_port": { "type": "string" },
+        "api_server_source": { "type": "string" },
+        "storage": {
+          "type": "object",
+          "properties": {
+            "backend": { "const": "zfs" },
+            "linstor_pool": { "type": "string" },
+            "nodes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "zpool"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "devices": { "type": "array", "items": { "type": "string" } },
+                  "layout": { "enum": ["single", "mirror", "raidz"] },
+                  "zpool": { "type": "string" },
+                  "linstor_pool": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "publishing": {
+          "type": "object",
+          "properties": {
+            "host": { "type": "string" },
+            "api_endpoint": { "type": "string" },
+            "external_ips": { "type": "array", "items": { "type": "string" } },
+            "exposure": { "enum": ["externalIPs", "loadBalancer"] },
+            "cert_solver": { "enum": ["http01", "dns01"] }
+          }
+        }
+      }
+    },
+    "research_cache": {
+      "type": "object",
+      "description": "Cache key for Phase 4.5 active research. 24h TTL keyed on the cozystack_intake combination.",
+      "properties": {
+        "cached_at": { "type": "string", "format": "date-time" },
+        "key": { "type": "string", "description": "Hash of (cozystack_version, talos_version, platform, variant, bundles)." },
+        "findings": { "type": "array" }
+      }
+    },
+    "status": {
+      "type": "object",
+      "description": "Per-skill state machine owned by the wizard. Each skill writes exactly one of completed_at OR failed_at plus error string when failing.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "dispatched_at": { "type": "string", "format": "date-time" },
+          "completed_at": { "type": "string", "format": "date-time" },
+          "failed_at": { "type": "string", "format": "date-time" },
+          "error": { "type": "string" },
+          "error_detail": { "type": "string" }
+        },
+        "oneOf": [
+          { "required": ["completed_at"] },
+          { "required": ["failed_at"] },
+          { "required": ["dispatched_at"], "not": { "anyOf": [{ "required": ["completed_at"] }, { "required": ["failed_at"] }] } }
+        ]
+      }
+    }
+  }
+}

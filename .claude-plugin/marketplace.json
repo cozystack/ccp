@@ -1,40 +1,22 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "cozystack-claude-plugins",
-  "description": "Claude Code plugins for the Cozystack ecosystem — deployment skills, development workflows, and infrastructure tools",
+  "description": "Claude Code plugins for the Cozystack ecosystem — cozystack:* platform skills (wizard, talos-bootstrap, talos-reset, ubuntu-bootstrap, cluster-install, debug, cluster-upgrade, package-deploy, package-bump, external-app-create) plus linstor:* DRBD/LINSTOR operations",
   "owner": {
     "name": "Cozystack",
     "url": "https://github.com/cozystack"
   },
   "plugins": [
     {
-      "name": "cozy-deploy",
-      "description": "Deploy a Cozystack package to a dev cluster via make + cozyhr — handles fresh install and dev-loop iteration with ExternalArtifact support",
-      "source": "./skills/cozy-deploy",
+      "name": "cozystack",
+      "description": "Cozystack platform skills bundle — wizard (entry-point orchestrator that interviews + dispatches the chain), talos-bootstrap (Talos node prep via talm with maintenance-mode probe, cert-SAN NAT guardrail, multidoc machine-config, and opt-in boot-method picker), talos-reset (cloud-provider terminate+relaunch helper for unrecoverable Talos nodes — OCI/AWS/GCP/Hetzner; preserves disks + VNICs + NSGs), ubuntu-bootstrap (Ubuntu/Debian k3s bootstrap wrapping ansible-cozystack), cluster-install (Cozystack on a ready cluster — node-readiness, ZFS pool provisioning, extractedprism HA proxy, all-HRs-Ready + storage-pools-registered gate), debug (investigate stuck installs — classify operator-error/config-drift/upstream-bug/not-supported, apply fixes or workarounds, draft upstream issues on approval), cluster-upgrade (release-notes-driven v1.x patch/minor upgrade), package-deploy (dev-loop deploy with ExternalArtifact support), package-bump (single-package version bump with changelog adaptation), external-app-create (scaffold a new external-apps package). Invoked as cozystack:wizard, cozystack:talos-bootstrap, cozystack:talos-reset, cozystack:ubuntu-bootstrap, cozystack:cluster-install, cozystack:debug, cozystack:cluster-upgrade, cozystack:package-deploy, cozystack:package-bump, cozystack:external-app-create.",
+      "source": "./plugins/cozystack",
       "category": "infrastructure"
     },
     {
-      "name": "cozy-external-app",
-      "description": "Scaffold a new Cozystack external app package — generates chart skeleton, ApplicationDefinition, and handles dependency integration (e.g. Immich → Postgres) via managed CNPG clusters or external secret references",
-      "source": "./skills/cozy-external-app",
-      "category": "infrastructure"
-    },
-    {
-      "name": "drbd-recovery",
-      "description": "Diagnose and recover DRBD/LINSTOR storage issues in Kubernetes clusters — handles StandAlone, DELETING, Inconsistent, Diskless, quorum loss, bitmap errors, and other common failure modes",
-      "source": "./skills/drbd-recovery",
-      "category": "infrastructure"
-    },
-    {
-      "name": "cozystack-upgrade",
-      "description": "Guided upgrade of a running Cozystack v1.x cluster to a newer v1.x patch or minor version — release-notes analysis, prechecks, stop gates, helm upgrade, targeted post-upgrade verification, known failure recovery",
-      "source": "./skills/cozystack-upgrade",
-      "category": "infrastructure"
-    },
-    {
-      "name": "cozy-bump",
-      "description": "Bump a cozystack monorepo package — reads upstream changelog, adapts to breaking changes, regenerates schema, optionally deploys to a dev cluster",
-      "source": "./skills/cozy-bump",
+      "name": "linstor",
+      "description": "LINSTOR / DRBD operations bundle for Kubernetes — invoked as linstor:recover for diagnosing and recovering broken DRBD resources (StandAlone, DELETING, Inconsistent, Diskless, quorum loss, bitmap errors). Useful on any Kubernetes cluster that runs piraeus-operator / LINSTOR.",
+      "source": "./plugins/linstor",
       "category": "infrastructure"
     }
   ]

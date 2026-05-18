@@ -1,0 +1,181 @@
+---
+name: cluster-upgrade
+description: Use when upgrading a running Cozystack v1.x cluster to a newer v1.x patch or minor version. Not for v0.x → v1.0 major migration.
+---
+
+# cozystack:cluster-upgrade
+
+Guided upgrade of a running Cozystack v1.x cluster. Source of truth: `https://cozystack.io/docs/<vX.Y>/operations/cluster/upgrade/` (substitute the version selector value matching your target — e.g. `v1.3`).
+
+## Core principles
+
+**Release-notes-driven upgrade.** Every release changes a specific set of components. Generic "all green" checks miss regressions in the areas that actually changed. Read the target's release notes, extract the change list, and run targeted pre/post checks — not just the default health checklist.
+
+**Match the operator's natural language.** Detect from prior conversation messages (or read `<config-dir>/.state.yaml` `operator_language` if a wizard chain is in progress). Use it in every prompt, AskUserQuestion option, summary, and gate. Never ask "what language?" separately. Code identifiers, commands, file paths, and GitHub-public text stay in their canonical form.
+
+**One valid path → just do it.** After the operator approved the risk summary at the upgrade stop gate, the skill runs `helm upgrade` + post-upgrade health checks + tenant verification back-to-back. Approval gates remain only for the named STOP GATEs in the workflow (risk summary, helm upgrade itself, final report) and for any rollback action (always destructive-risky).
+
+**Front-load the interview.** Read the cluster + release notes + pre-flight checks up front and surface a single risk-summary screen with the upgrade plan, change-list, and any blockers. Approval of that screen is the only interview gate — subsequent phases (helm upgrade, post-upgrade checks) execute without re-prompting.
+
+**Layer-pure operator output.** The skill never says "returning control to wizard" or any other orchestration commentary in the **operator-facing** summary. Whoever invoked the skill (a human directly, or a chain orchestrator) figures out what's next on their own. Internal documentation references are fine; `wizard` does not appear in text shown to the operator.
+
+## Workflow
+
+```dot
+digraph upgrade_flow {
+    "0. Identify versions" [shape=box];
+    "1. Analyze release notes" [shape=box];
+    "2. Pre-flight" [shape=box];
+    "GATE: change-risk summary" [shape=diamond];
+    "3. Protect resources" [shape=box];
+    "4. helm upgrade" [shape=box];
+    "5. Monitor" [shape=box];
+    "6. Post-upgrade checks" [shape=box];
+    "GATE: final report" [shape=diamond];
+    "Done" [shape=doublecircle];
+
+    "0. Identify versions" -> "1. Analyze release notes" -> "2. Pre-flight" -> "GATE: change-risk summary";
+    "GATE: change-risk summary" -> "3. Protect resources" [label="approved"];
+    "GATE: change-risk summary" -> "abort" [label="denied"];
+    "3. Protect resources" -> "4. helm upgrade" -> "5. Monitor" -> "6. Post-upgrade checks" -> "GATE: final report" -> "Done";
+}
+```
+
+## Stop gates (non-negotiable)
+
+Request explicit user approval before each. Prior approval does NOT carry forward.
+
+1. **Any mutating command** — show exact command first.
+2. **The `helm upgrade` itself** — show current→target version, chart version, change-risk summary.
+3. **Deleting any resource** (old ConfigMaps, orphan HRs, helm release secrets).
+4. **Patching `Tenant`, `TenantControlPlane`, or `sh.helm.release.v1.*` secrets** — see `references/known-failures.md` for why.
+
+## Guardrails
+
+- NEVER run `kubectl` or `helm` without `--context $CTX` / `--kube-context $CTX`. Operators commonly have prod + staging configured in the same kubeconfig and `current-context` can flip between sessions. Bare commands silently target the wrong cluster. Step 0 pins `$CTX` once; every subsequent invocation reuses it.
+- NEVER skip Step 1 release-notes analysis — generic "all green" doesn't catch regressions in changed areas.
+- NEVER use `helm upgrade --reuse-values` for the cozy-installer chart — see Step 5 for why.
+
+## Steps
+
+### Step 0 — Pin the context, then identify versions
+
+Pin `$CTX` to the cluster being upgraded before any other command. Read from `<config-dir>/.state.yaml` `cluster.context` when a wizard chain is in progress; otherwise show `kubectl config current-context` and ask the operator to confirm or pick a different one. Every subsequent `kubectl` and `helm` invocation in this skill passes `--context $CTX` / `--kube-context $CTX` explicitly — bare commands are forbidden, see Guardrails.
+
+```bash
+kubectl --context $CTX --namespace cozy-system get deployment cozystack-operator \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+kubectl --context $CTX get packages.cozystack.io cozystack.cozystack-platform -o yaml   # bundle + values
+```
+
+If cluster is on v0.x, stop — this skill does not cover the v0→v1 migration.
+
+Only stable (`vX.Y.Z`) releases are recommended for production. Avoid `-alpha/-beta/-rc` unless user explicitly asks.
+
+### Step 1 — Analyze release notes (most important)
+
+```bash
+gh release list --repo cozystack/cozystack --limit 20
+gh release view vX.Y.Z --repo cozystack/cozystack
+```
+
+Read notes for **every release between current and target**. Extract a change-risk summary (affected components, breaking changes, migrations, CRD bumps, dependency changes).
+
+**How to analyze + change-signal mapping table:** read `references/release-notes-analysis.md`.
+
+### Step 2 — Pre-flight checks
+
+Any `False`, stuck, or suspended resource MUST be fixed before upgrading.
+
+```bash
+# Quick gate — anything here blocks the upgrade
+bash <cozystack-repo>/hack/check-readiness.sh
+```
+
+**Full pre-flight command set** (including LINSTOR, Kube-OVN, tenant control planes, suspended flux resources, etcd): read `references/preflight-checks.md`.
+
+### Step 3 — STOP GATE: change-risk summary
+
+Show user: current→target version, change-risk summary from Step 1, pre-flight results, the exact upgrade command. Wait for explicit approval.
+
+### Step 4 — Protect critical resources
+
+Always run. Missing these annotations can delete `cozy-system` on upgrade.
+
+```bash
+kubectl --context $CTX annotate namespace cozy-system helm.sh/resource-policy=keep --overwrite
+kubectl --context $CTX --namespace cozy-system annotate configmap cozystack-version helm.sh/resource-policy=keep --overwrite
+```
+
+### Step 5 — Upgrade
+
+```bash
+helm --kube-context $CTX upgrade cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer \
+  --version X.Y.Z \
+  --namespace cozy-system
+```
+
+**Do not use `--reuse-values`.** The `cozy-installer` chart pins the platform OCI repository in its default values; reusing old values would point the new operator at old package versions. Inspect the currently-installed user-overrides first, then re-apply only the ones the user actually set, explicitly with `--set` (e.g. `--set disableTelemetry=true`):
+
+```bash
+helm --kube-context $CTX get values cozystack --namespace cozy-system
+```
+
+### Step 6 — Monitor
+
+```bash
+kubectl --context $CTX --namespace cozy-system logs deploy/cozystack-operator --follow
+bash <cozystack-repo>/hack/check-readiness.sh -w 10 --context $CTX
+```
+
+Expect: operator pod Running, `cozystack.cozystack-platform` Package `Ready=True`, all HRs converge within a few minutes (tenant charts may take longer).
+
+### Step 7 — Post-upgrade checks
+
+Run both general **and** targeted-per-change checks from Step 1.
+
+**General + targeted check commands + tenant cluster sanity:** read `references/post-upgrade-checks.md`.
+
+### Step 8 — STOP GATE: final report
+
+Show user: result (success/partial/failed), before→after version, HR/Package totals, any warnings, one-line outcome per targeted check.
+
+## Rollback
+
+`helm --kube-context $CTX rollback cozystack <rev> --namespace cozy-system` is possible but has caveats (data migrations don't reverse). Before rolling back, snapshot: `kubectl --context $CTX get packages.cozystack.io -A -o yaml > pre-rollback.yaml`.
+
+**Details, caveats, when not to roll back:** read `references/rollback.md`.
+
+## Known failure modes
+
+High-blast-radius stuck states — stuck helm `uninstalling`, Kamaji datastore cert mismatch, `MissingRollbackTarget`, orphan HRs from removed apps, `cozy-system` accidentally deleted, etc.
+
+**Before any of these mitigation paths, read `references/known-failures.md`.** Each entry has a root cause and exact recovery commands.
+
+## Red flags during upgrade
+
+| Symptom | Likely cause |
+|---|---|
+| `Package.Ready=False, ValidationFailed` | Release tightened `values.schema.json`; fix Package before proceeding |
+| HR `Ready=False, ExternalArtifact ... not found` | App removed in target version → orphan HR (known-failures #6) |
+| `cozystack-operator` in CrashLoopBackOff | Stale CRD / RBAC; `kubectl --context $CTX --namespace cozy-system logs deploy/cozystack-operator --previous` |
+| HR `UninstallFailed, failed to delete release` | Stuck helm history (known-failures #1) |
+| TCP `INSTALLED VERSION` diverges from `VERSION` | Kamaji upgrade stuck (known-failures #4) |
+| `cozy-system` namespace gone | Missing `helm.sh/resource-policy=keep` (known-failures #7); restore from backup |
+
+## Common mistakes
+
+- Skipping release-notes analysis → regressions in changed areas go unseen.
+- Upgrading while HRs are suspended → those stay on old chart versions silently.
+- `helm upgrade` with `--reuse-values` → operator keeps pointing at old package versions (chart pins OCI repo). Extract user overrides via `helm get values` and pass them with `--set` instead.
+- Patching `Tenant/*.spec.etcd=false` to "clean up" → removes tenant etcd, breaks child kube clusters. See known-failures #2.
+- Deleting helm release secrets without suspending the HR first → helm-controller races with you.
+- Installing a pre-release in production without explicit user direction.
+
+## References
+
+- Skill files: `references/release-notes-analysis.md`, `references/preflight-checks.md`, `references/post-upgrade-checks.md`, `references/rollback.md`, `references/known-failures.md`
+- Upstream (pick the version matching your target from the docs site version selector): `https://cozystack.io/docs/<vX.Y>/operations/cluster/upgrade/`
+- Troubleshooting checklist: `https://cozystack.io/docs/<vX.Y>/operations/troubleshooting/`
+- Releases: `https://github.com/cozystack/cozystack/releases`
+- Readiness script: `<cozystack-repo>/hack/check-readiness.sh`
