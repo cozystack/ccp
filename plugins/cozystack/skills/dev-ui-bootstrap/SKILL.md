@@ -111,7 +111,7 @@ No semicolons in the config file — the repo's CLAUDE.md is strict: every file 
 Goal: a `kubectl proxy` instance is reachable on `$PROXY_PORT` and is talking to **the kubeconfig the operator picked**, not whatever happened to be active in the shell.
 
 1. Check whether `lsof -nP -iTCP:$PROXY_PORT -sTCP:LISTEN` (or `ss -tlnp`) already has a listener.
-2. If yes, inspect the existing process command line (`ps -p <pid> -o args=`). If it is a `kubectl proxy` pointing at the same kubeconfig (look for `--kubeconfig` in the args; if absent, check `KUBECONFIG` env in `/proc/<pid>/environ`), reuse it. Otherwise pick the next free port (start at `$PROXY_PORT+1`) and rewrite Vite's proxy `target` accordingly (see Phase 7).
+2. If yes, inspect the existing process command line (`ps -p <pid> -o args=`). If it is a `kubectl proxy` pointing at the same kubeconfig (look for `--kubeconfig` in the args; if absent, check `KUBECONFIG` env in `/proc/<pid>/environ`), reuse it. If it is something else (different kubeconfig, unrelated process), stop and `AskUserQuestion`: kill the occupant, pick a different proxy port (and accept the Phase 7 `vite.config.ts` edit gate), or cancel. Do not silently switch ports — Phase 7 prefers leaving `vite.config.ts` untouched, so a port switch is an operator-driven decision.
 3. If no listener, resolve the target context and start a new proxy in the background:
    ```bash
    CTX=$(kubectl --kubeconfig <path> config current-context)
