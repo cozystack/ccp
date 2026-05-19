@@ -128,13 +128,14 @@ If `$PROXY_PORT` is non-default (8001), the dev server still hard-codes `http://
 - Preferred: keep the default proxy port `8001` and explain why. The repo treats `vite.config.ts` as load-bearing and edits there are best left for a separate PR.
 - If the operator explicitly said "change the proxy port", `AskUserQuestion` before touching `vite.config.ts`.
 
-Start the dev server in the background, capturing output:
+Start the dev server in the background, redirecting output to a log file under `$WT` so the polling loop has something to grep:
 
 ```bash
-cd $WT && pnpm --filter @cozystack/console dev:e2e
+cd $WT && pnpm --filter @cozystack/console dev:e2e \
+  >$WT/.cozystack-dev-ui-bootstrap-vite.log 2>&1 &
 ```
 
-Wait for the `ready in` / `Local:` line via a polling loop (`until grep -q ...`). Then `curl -sS -o /dev/null -w "%{http_code}" http://localhost:$PORT/` and expect `200`.
+Wait for the `ready in` / `Local:` line via a polling loop against that log file (`until grep -q "ready in" $WT/.cozystack-dev-ui-bootstrap-vite.log; do sleep 0.5; done`, with a 30 s timeout guard). Then `curl -sS -o /dev/null -w "%{http_code}" http://localhost:$PORT/` and expect `200`.
 
 If the server fails to bind (port already in use after the free-port scan), the cause is usually a stale `vite` from a prior crashed session. Run `lsof -nP -iTCP:$PORT -sTCP:LISTEN` and show the result — let the operator decide whether to kill it.
 
