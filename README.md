@@ -22,7 +22,7 @@ Install a plugin:
 
 ### cozystack
 
-Platform skills bundle. One install gives you nine skills, invoked as `/cozystack:<name>`. Start with `/cozystack:wizard` — it asks Talos / Ubuntu / Existing and picks the chain.
+Platform skills bundle. One install gives you eleven skills, invoked as `/cozystack:<name>`. Start with `/cozystack:wizard` — it asks Talos / Ubuntu / Existing and picks the chain.
 
 | Skill | Description |
 | --- | --- |
@@ -36,6 +36,7 @@ Platform skills bundle. One install gives you nine skills, invoked as `/cozystac
 | **/cozystack:package-deploy** | Deploy a single Cozystack package to a dev cluster via make + cozyhr — handles fresh install and dev-loop iteration with ExternalArtifact support. |
 | **/cozystack:package-bump** | Bump a single package inside the cozystack monorepo — reads upstream changelog, adapts to breaking changes, regenerates schema, optionally deploys to a dev cluster. |
 | **/cozystack:external-app-create** | Scaffold a new Cozystack external app package with dependency integration (managed CNPG Postgres, external secret references). |
+| **/cozystack:dev-ui-bootstrap** | Bootstrap a UI dev sandbox — Playwright + Vite dev server for `cozystack-ui` pointed at a chosen kubeconfig. Creates a feature worktree, installs `@playwright/test` and Chromium, writes `playwright.config.ts`, adds `dev:e2e` / `test:e2e` scripts, and brings up `kubectl proxy` + Vite on a free port. Use when fixing, debugging, or writing tests against the Cozystack console. |
 
 Chains the wizard builds:
 
@@ -70,7 +71,7 @@ Operators can opt out with `--no-extractedprism` and supply their own `--api-hos
 
 ```text
 plugins/
-  cozystack/                          # platform bundle (9 skills)
+  cozystack/                          # platform bundle (11 skills)
     .claude-plugin/plugin.json
     skills/
       wizard/                         # entry point: interview + chain dispatcher
@@ -83,6 +84,7 @@ plugins/
       package-deploy/                 # dev-loop deploy of a single package
       package-bump/                   # bump a monorepo package
       external-app-create/            # scaffold a new external-apps package
+      dev-ui-bootstrap/               # bootstrap Playwright + Vite sandbox for cozystack-ui
   linstor/                            # storage bundle (1 skill)
     .claude-plugin/plugin.json
     skills/
