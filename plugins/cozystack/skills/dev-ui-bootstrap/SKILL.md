@@ -33,7 +33,7 @@ Resolve in priority order:
 2. `~/aenix/cozystack-ui` — the canonical clone on contributors' workstations.
 3. Otherwise — `AskUserQuestion` for the path. Do not `git clone`; the skill is for an already-cloned working copy.
 
-Verify `pnpm` is on `$PATH` and the workspace's `package.json` has `"packageManager": "pnpm@..."`. If `pnpm` is missing, stop and tell the operator to install it — do not auto-install package managers.
+Verify `pnpm` and `kubectl` are on `$PATH`, and that the workspace's `package.json` has `"packageManager": "pnpm@..."`. If either binary is missing, stop and tell the operator to install it — do not auto-install package managers or CLIs. Catching this here avoids failing five phases deeper when `kubectl proxy` is first invoked.
 
 ## Phase 3 — Worktree creation
 
