@@ -63,7 +63,7 @@ pnpm --filter @cozystack/console add -D @playwright/test
 Unless `--no-browser`:
 
 ```bash
-cd $WT/apps/console && npx playwright install chromium
+cd $WT/apps/console && pnpm exec playwright install chromium
 ```
 
 Chromium is ~120 MB. Note the size in the running commentary so an operator on a slow link knows what is happening. The download lives in `~/.cache/ms-playwright/` and is shared across worktrees — usually a one-time cost.
