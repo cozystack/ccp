@@ -117,7 +117,7 @@ Goal: a `kubectl proxy` instance is reachable on `$PROXY_PORT` and is talking to
    CTX=$(kubectl --kubeconfig <path> config current-context)
    kubectl --kubeconfig <path> --context $CTX proxy --port=$PROXY_PORT &
    ```
-4. Smoke-test with `curl -sS -o /dev/null -w "%{http_code}" http://localhost:$PROXY_PORT/api/v1/namespaces/default`. Expect `200`. On `401`/`403` the kubeconfig is wrong or expired — surface the error and stop. On connection refused, wait up to 5 s for the proxy to come up before failing.
+4. Smoke-test with `curl -sS -o /dev/null -w "%{http_code}" http://localhost:$PROXY_PORT/api`. Expect `200`. `/api` is the unauthenticated API-group discovery endpoint — it returns `200` from any reachable apiserver and avoids false negatives from RBAC-restricted kubeconfigs that cannot `get namespaces/default`. On `401`/`403` the kubeconfig is wrong or expired — surface the error and stop. On connection refused, wait up to 5 s for the proxy to come up before failing.
 
 Capture the proxy process ID and the kubeconfig path in a marker file at `$WT/.cozystack-dev-ui-bootstrap-proxy` so a follow-up session knows what is running. Never write secrets there — kubeconfig path and context name only.
 
