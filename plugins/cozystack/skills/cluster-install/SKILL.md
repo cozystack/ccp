@@ -412,7 +412,7 @@ actions on Continue:
   4. helm upgrade --install cozy-installer ... --namespace cozy-system --create-namespace  (~2 min)
   5. wait deploy/cozystack-operator Available; wait CRD packages.cozystack.io Established
   6. kubectl apply --filename /tmp/.../platform-package.yaml
-  7. wait root Tenant CR, patch spec.ingress=true (~3 min — required for Phase 8 to ever finish; breaks the OIDC chicken-and-egg)
+  7. wait root Tenant CR, patch spec.host + spec.ingress=true (~3 min — required for Phase 8 to ever finish; breaks the OIDC chicken-and-egg)
   8. poll HRs every 30s until all Ready=True (~30–60 min)
   9. print access summary
 
@@ -727,7 +727,7 @@ kubectl --context $CTX get hr --all-namespaces \
   --output jsonpath='{range .items[?(@.status.conditions[?(@.type=="Ready" && @.status!="True")])]}{.metadata.namespace}/{.metadata.name} {end}'
 ```
 
-On the full `system`-bundle path you may also want the root tenant's `etcd`/`monitoring`/`seaweedfs` services (this is what cozystack's own `hack/e2e-install-cozystack.bats` patches): extend the patch to `{"spec":{"ingress":true,"host":"<HOST>","monitoring":true,"etcd":true,"seaweedfs":true}}` when those were selected in Phase 4. Leave them at their defaults otherwise.
+On the full `system`-bundle path you may also want the root tenant's `etcd`/`monitoring`/`seaweedfs` services (this is what cozystack's own `hack/e2e-install-cozystack.bats` patches): extend the patch to `{"spec":{"ingress":true,"host":"${HOST}","monitoring":true,"etcd":true,"seaweedfs":true}}` when those were selected in Phase 4. Leave them at their defaults otherwise.
 
 ```text
 HelmRelease $NS/$NAME has been Failing for $T minutes.
@@ -1086,7 +1086,7 @@ If any phase hits a fatal failure that looks like an upstream bug or doc gap, fo
 - NEVER bootstrap Talos nodes or invoke `boot-to-talos` / `talm` from inside this skill — that flow lives in `/cozystack:talos-bootstrap`. Refuse and hand off.
 - NEVER auto-rollback a partially provisioned storage state — print backout commands and let the operator decide.
 - NEVER accept a custom `publishing.host` without an explicit operator confirmation that they own the domain and will configure wildcard DNS — the HTTP-01 cert solver fails silently otherwise. nip.io patterns skip this gate because nip.io is publicly hosted DNS.
-- ALWAYS patch `tenants/root.spec.ingress=true` from inside the Phase 8 watch loop as soon as the CR appears, on `system`-bundle installs. The OIDC chicken-and-egg makes Phase 8 unreachable otherwise — dashboard / keycloak / flux-plunger loop forever, every other downstream HR stalls on the missing root ingress. The CR can appear at any point during the watch loop; do not gate the patch behind a fixed pre-Phase-8 wait.
+- ALWAYS patch `tenants/root` with BOTH `spec.host=$HOST` and `spec.ingress=true` from inside the Phase 8 watch loop as soon as the CR appears, on `system`-bundle installs. The root tenant ships with `spec.host: ""` and does not inherit `publishing.host`, so an ingress-only patch leaves every per-tenant ingress object rendering against an empty domain. The OIDC chicken-and-egg makes Phase 8 unreachable otherwise — dashboard / keycloak / flux-plunger loop forever, every other downstream HR stalls on the missing root ingress. The CR can appear at any point during the watch loop; do not gate the patch behind a fixed pre-Phase-8 wait.
 - ALWAYS read variant overlays and `requirements.md` before declaring "this looks fine" — variant-specific checks (CP-label value, ZFS availability, KubeOVN MASTER_NODES) are easy to miss.
 - ALWAYS pull live data over cached assumption: `kubectl get` over "I think this is …".
 - ALWAYS write Phase 4 collected values to disk in `<config-dir>/cozystack-platform-package.yaml` before applying — the file is part of the diagnostic bundle if Phase 8 fails. ZFS pool registration is stored separately under `<config-dir>/.state.yaml` `cozystack.storage.nodes[]` and replayed by the Phase 8 post-Ready hook (there is no `LinstorSatelliteConfiguration` CR for the ZFS path).

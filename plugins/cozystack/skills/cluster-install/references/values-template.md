@@ -217,13 +217,13 @@ Use `nip.io` dash notation: if the LB IP is `192.0.2.10`, set `publishing.host: 
 
 ## After Package apply
 
-If `system` bundle is on and `cozystack_tenant_root_ingress` semantics are desired, patch the root tenant after the operator creates it:
+If `system` bundle is on and `cozystack_tenant_root_ingress` semantics are desired, patch the root tenant after the operator creates it — set BOTH `spec.host` and `spec.ingress`, since the root tenant ships with `spec.host: ""` and does not inherit `publishing.host` (see the note above). The skill does this from inside the Phase 8 watch loop (SKILL.md Phase 8), not as a separate post-apply step:
 
 ```bash
 kubectl --context $CTX wait tenants.apps.cozystack.io/root --namespace tenant-root \
   --for=jsonpath='{.metadata.name}'=root --timeout=300s
 kubectl --context $CTX --namespace tenant-root patch tenants.apps.cozystack.io root \
-  --type=merge --patch '{"spec":{"ingress":true}}'
+  --type=merge --patch "{\"spec\":{\"ingress\":true,\"host\":\"${HOST}\"}}"
 ```
 
 This is what creates the `IngressClass` and brings up `ingress-nginx`.
