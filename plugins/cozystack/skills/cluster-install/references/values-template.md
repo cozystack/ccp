@@ -30,9 +30,11 @@ Install command shape:
 ```bash
 # v1.4.0+ (current): release in cozy-system, --create-namespace REQUIRED,
 # the pre-install labeler hook stamps PSA=privileged on the new namespace.
+# OCI chart tags are X.Y.Z (no leading v) — normalise before --version.
+INSTALLER_VERSION_OCI="${INSTALLER_VERSION#v}"
 helm --kube-context $CTX upgrade --install cozy-installer \
   oci://ghcr.io/cozystack/cozystack/cozy-installer \
-  --version $INSTALLER_VERSION \
+  --version "$INSTALLER_VERSION_OCI" \
   --namespace cozy-system --create-namespace \
   --set cozystackOperator.variant=$INSTALLER_VARIANT \
   --set cozystack.apiServerHost=$API_HOST \
@@ -44,9 +46,11 @@ For a v1.3.x install the form differs (release in `kube-system`, NO `--create-na
 
 ```bash
 # v1.3.x ONLY — do not use against a v1.4+ chart.
+# OCI chart tags are X.Y.Z (no leading v) — normalise before --version.
+INSTALLER_VERSION_OCI="${INSTALLER_VERSION#v}"
 helm --kube-context $CTX upgrade --install cozy-installer \
   oci://ghcr.io/cozystack/cozystack/cozy-installer \
-  --version $INSTALLER_VERSION \
+  --version "$INSTALLER_VERSION_OCI" \
   --namespace kube-system \
   --set cozystackOperator.variant=$INSTALLER_VARIANT \
   --wait --timeout 10m
