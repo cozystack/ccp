@@ -36,11 +36,11 @@ The root ingress controller doesn't start until `tenants.apps.cozystack.io/root`
 
 This is a chicken-and-egg of the `isp-full*` variant + OIDC combination, not a bug in any single component:
 
-- Platform Package does not patch `tenant root.spec.ingress`.
+- Platform Package does not patch `tenant root.spec.host` / `spec.ingress`.
 - The cozystack dependency graph is built so gatekeeper can't come up before ingress, and dashboard can't come up before gatekeeper.
 - But flux-plunger waits on dashboard, which waits on ingress, which waits on the missing manual patch.
 
-`cozystack:cluster-install` Phase 8 patches `tenants/root.spec.ingress=true` inline as soon as the CR appears in the watch loop, which avoids the trap entirely on a fresh install regardless of when the CRD lands relative to other HRs.
+`cozystack:cluster-install` Phase 8 patches `tenants/root` with both `spec.host` and `spec.ingress=true` inline as soon as the CR appears in the watch loop, which avoids the trap entirely on a fresh install regardless of when the CRD lands relative to other HRs.
 
 **Recovery on an install that has already stalled in Phase 8**
 
@@ -49,7 +49,7 @@ kubectl --context $CTX --namespace tenant-root wait tenants.apps.cozystack.io/ro
   --for=jsonpath='{.metadata.name}'=root --timeout=300s
 
 kubectl --context $CTX --namespace tenant-root patch tenants.apps.cozystack.io root \
-  --type=merge --patch '{"spec":{"ingress":true}}'
+  --type=merge --patch "{\"spec\":{\"ingress\":true,\"host\":\"${HOST}\"}}"
 ```
 
 Within ~2 min:

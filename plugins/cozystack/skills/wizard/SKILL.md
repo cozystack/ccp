@@ -453,7 +453,7 @@ cozystack:wizard — known landmines for your specific combination
   3. [MEDIUM] cozystack v1.3.3 does not create StorageClasses automatically
      source: cozystack/cozystack@v1.3.3 packages/system/linstor/
              templates/storageclass.yaml.disabled
-     why: tenants CRD spec.storageClasses lands only in v1.4.
+     why: tenants CRD has no spec.storageClasses field (absent through v1.4.2) — nothing auto-creates SCs.
      mitigation: cluster-install Phase 8.6 will apply local + replicated SCs.
 
   4. [LOW / stale-check] "OCI dashboard install fails after 5 min"

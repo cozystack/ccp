@@ -78,13 +78,13 @@ wipefs --all "$DEVICE"
 
 The skill's Phase 5.5 step 7 (pre-existing-data check) catches this before `zpool create` and refuses to proceed without operator approval of the wipe.
 
-## Cozystack v1.3.x does not create StorageClasses automatically
+## Cozystack does not create StorageClasses automatically (v1.3.x and v1.4.2)
 
 **Symptom**: cluster reaches "all HRs Ready", but every stateful tenant workload sits in `Pending: pod has unbound immediate PersistentVolumeClaims`. `kubectl get storageclass` returns no rows.
 
-**Mechanism**: in v1.3.x, neither the cozy-installer chart nor the Platform Package emits StorageClasses; they expect the operator to apply them by hand after `linstor storage-pool create`. v1.4+ exposes `tenants.apps.cozystack.io spec.storageClasses` and the operator creates them based on the tenant declaration.
+**Mechanism**: neither the cozy-installer chart nor the Platform Package emits StorageClasses; the operator must apply them by hand after `linstor storage-pool create`. An earlier assumption that v1.4+ exposes `tenants.apps.cozystack.io spec.storageClasses` and auto-creates the classes is **false** — the field is absent from the shipped tenant CRD on v1.4.2 (`kubectl get crd tenants.apps.cozystack.io -o yaml | grep -c storageClass` → `0`) and from the monorepo source through current HEAD, so nothing auto-creates them on v1.4 either.
 
-**Fix**: SKILL.md Phase 8.6 creates `local` (placementCount=1) and `replicated` (placementCount=3, isDefaultClass=true) for v1.3.x. Skip on v1.4+.
+**Fix**: SKILL.md Phase 8.6 creates `local` (placementCount=1) and `replicated` (placementCount=3, isDefaultClass=true) whenever the live cluster comes up with no StorageClasses. The gate is the live `kubectl get storageclass` check, not a version number, so it self-skips if a future release ever starts creating them.
 
 ## Cozystack v1.3.3 `isp-full` bundle does not include Keycloak
 

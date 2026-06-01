@@ -2,7 +2,11 @@
 
 ## Installer chart values
 
-The cozy-installer Helm release lives in `kube-system` (the chart itself templates `Namespace cozy-system`, so the release secret can't live there). Two keys matter at install time:
+The cozy-installer Helm release lives in `cozy-system`. Since cozystack v1.4.0 (cozystack/cozystack#2508) the chart no longer ships a `Namespace cozy-system` resource on the helm-install path — instead the caller passes `--create-namespace` and a pre-install hook Job (`cozy-system-labeler`, running in `kube-system`, hostNetwork, tolerant of NotReady/CNI-not-ready nodes) stamps the freshly-created namespace with the PodSecurity `enforce=privileged` and `cozystack.io/system=true` labels.
+
+> **v1.3.x vs v1.4.x — do not mix these up.** On v1.3.x the release lived in `kube-system` and the chart templated the `Namespace cozy-system` itself, so `--create-namespace` was forbidden (it collided with the chart's own Namespace). On v1.4.0+ that is inverted: the release lives in `cozy-system`, the chart does NOT template the namespace, and `--create-namespace` is REQUIRED. Passing the old `--namespace kube-system` (no `--create-namespace`) against a v1.4 chart makes the `cozy-system-labeler` pre-install hook fail with `namespaces "cozy-system" not found`, and the whole install aborts before the operator deploys. Pick the form that matches `installer_version`.
+
+Two keys matter at install time:
 
 ```yaml
 cozystackOperator:
@@ -24,17 +28,35 @@ cozystack:
 Install command shape:
 
 ```bash
+# v1.4.0+ (current): release in cozy-system, --create-namespace REQUIRED,
+# the pre-install labeler hook stamps PSA=privileged on the new namespace.
+# OCI chart tags are X.Y.Z (no leading v) — normalise before --version.
+INSTALLER_VERSION_OCI="${INSTALLER_VERSION#v}"
 helm --kube-context $CTX upgrade --install cozy-installer \
   oci://ghcr.io/cozystack/cozystack/cozy-installer \
-  --version $INSTALLER_VERSION \
-  --namespace kube-system \
+  --version "$INSTALLER_VERSION_OCI" \
+  --namespace cozy-system --create-namespace \
   --set cozystackOperator.variant=$INSTALLER_VARIANT \
   --set cozystack.apiServerHost=$API_HOST \
   --set cozystack.apiServerPort=$API_PORT \
   --wait --timeout 10m
 ```
 
-If `cozy-system` already exists, the chart refuses with `invalid ownership metadata`. Adopt it first:
+For a v1.3.x install the form differs (release in `kube-system`, NO `--create-namespace` — the chart templates the namespace itself):
+
+```bash
+# v1.3.x ONLY — do not use against a v1.4+ chart.
+# OCI chart tags are X.Y.Z (no leading v) — normalise before --version.
+INSTALLER_VERSION_OCI="${INSTALLER_VERSION#v}"
+helm --kube-context $CTX upgrade --install cozy-installer \
+  oci://ghcr.io/cozystack/cozystack/cozy-installer \
+  --version "$INSTALLER_VERSION_OCI" \
+  --namespace kube-system \
+  --set cozystackOperator.variant=$INSTALLER_VARIANT \
+  --wait --timeout 10m
+```
+
+If `cozy-system` already exists **and lacks helm ownership metadata** (a stale bare namespace from a previous attempt), the v1.4 `--create-namespace` install adopts it cleanly only when the labels don't conflict; if helm refuses with `invalid ownership metadata`, adopt it first:
 
 ```bash
 kubectl --context $CTX patch namespace cozy-system --type=merge --patch '{
@@ -42,13 +64,13 @@ kubectl --context $CTX patch namespace cozy-system --type=merge --patch '{
     "labels": {"app.kubernetes.io/managed-by": "Helm"},
     "annotations": {
       "meta.helm.sh/release-name": "cozy-installer",
-      "meta.helm.sh/release-namespace": "kube-system"
+      "meta.helm.sh/release-namespace": "cozy-system"
     }
   }
 }'
 ```
 
-(Skip adoption if the namespace doesn't exist; `--create-namespace` would conflict with the chart's own `Namespace` template, so don't pass it.)
+If the namespace is owned by another release, **refuse** — do not relabel.
 
 ## Platform Package CR
 
@@ -73,6 +95,15 @@ spec:
             enabled: true
           naas:
             enabled: true
+        authentication:
+          oidc:
+            enabled: true               # REQUIRED for a working web dashboard.
+            # Defaults to false; the isp-full* overlays do NOT turn it on.
+            # When false, no Keycloak is deployed and the dashboard falls back
+            # to its token-proxy container, which is broken on v1.4.2 (never
+            # binds :8000, CrashLoops on its own liveness probe). Set true to
+            # deploy Keycloak and switch the dashboard to oauth2-proxy. Omit
+            # (leave false) only for an API-only install with no web dashboard.
         networking:
           podCIDR: "10.244.0.0/16"      # cozystack default, from packages/core/platform/values.yaml
           podGateway: "10.244.0.1"      # first IP of podCIDR
@@ -86,10 +117,15 @@ spec:
           exposedServices:
             - api
             - dashboard
+            - keycloak                  # REQUIRED when authentication.oidc.enabled
+            #                             is true — gives Keycloak its public
+            #                             ingress + LE cert + issuer URL.
           externalIPs:
             - 192.0.2.10
           exposure: externalIPs         # or "loadBalancer"
 ```
+
+> **Root tenant `spec.host` does not inherit `publishing.host`.** On v1.4.2 the root tenant CR ships with `spec.host: ""` and is not back-filled from the Package's `publishing.host`. The skill must patch it explicitly in the Phase 8 watch loop (`spec.host` + `spec.ingress: true`), otherwise the per-tenant ingress objects render against an empty domain and Keycloak/dashboard never get usable URLs. See SKILL.md Phase 8.
 
 ## extractedprism (generic kube-apiserver HA)
 
@@ -181,13 +217,13 @@ Use `nip.io` dash notation: if the LB IP is `192.0.2.10`, set `publishing.host: 
 
 ## After Package apply
 
-If `system` bundle is on and `cozystack_tenant_root_ingress` semantics are desired, patch the root tenant after the operator creates it:
+If `system` bundle is on and `cozystack_tenant_root_ingress` semantics are desired, patch the root tenant after the operator creates it — set BOTH `spec.host` and `spec.ingress`, since the root tenant ships with `spec.host: ""` and does not inherit `publishing.host` (see the note above). The skill does this from inside the Phase 8 watch loop (SKILL.md Phase 8), not as a separate post-apply step:
 
 ```bash
 kubectl --context $CTX wait tenants.apps.cozystack.io/root --namespace tenant-root \
   --for=jsonpath='{.metadata.name}'=root --timeout=300s
 kubectl --context $CTX --namespace tenant-root patch tenants.apps.cozystack.io root \
-  --type=merge --patch '{"spec":{"ingress":true}}'
+  --type=merge --patch "{\"spec\":{\"ingress\":true,\"host\":\"${HOST}\"}}"
 ```
 
 This is what creates the `IngressClass` and brings up `ingress-nginx`.

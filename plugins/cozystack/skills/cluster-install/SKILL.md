@@ -373,7 +373,7 @@ cozystack:cluster-install plan
 context:           $CTX  ($API_URL)
 installer release: oci://ghcr.io/cozystack/cozystack/cozy-installer:$INSTALLER_VERSION_OCI    (OCI tag = git tag with the v stripped)
 installer variant: $INSTALLER_VARIANT
-helm release ns:   kube-system  (chart templates Namespace cozy-system itself)
+helm release ns:   cozy-system  (--create-namespace; labeler hook stamps PSA — v1.4+)
 platform variant:  $PLATFORM_VARIANT
 bundles:           $BUNDLES_CSV
 
@@ -408,11 +408,11 @@ storage (ZFS):
 actions on Continue:
   1. Storage provisioning per node (Phase 5.5; one approval per node)
   2. (generic only, unless --no-extractedprism) install extractedprism DaemonSet for kube-apiserver HA  (~1 min)
-  3. (if cozy-system namespace exists but unowned) adopt namespace into kube-system/cozy-installer
-  4. helm upgrade --install cozy-installer ... --namespace kube-system  (~2 min)
+  3. (if cozy-system namespace exists but unowned) adopt namespace into cozy-system/cozy-installer
+  4. helm upgrade --install cozy-installer ... --namespace cozy-system --create-namespace  (~2 min)
   5. wait deploy/cozystack-operator Available; wait CRD packages.cozystack.io Established
   6. kubectl apply --filename /tmp/.../platform-package.yaml
-  7. wait root Tenant CR, patch spec.ingress=true (~3 min — required for Phase 8 to ever finish; breaks the OIDC chicken-and-egg)
+  7. wait root Tenant CR, patch spec.host + spec.ingress=true (~3 min — required for Phase 8 to ever finish; breaks the OIDC chicken-and-egg)
   8. poll HRs every 30s until all Ready=True (~30–60 min)
   9. print access summary
 
@@ -623,15 +623,24 @@ Namespace adoption first if `cozy-system` exists and lacks Helm metadata (see `r
 # Normalise: v1.3.3 → 1.3.3 (Helm's OCI client matches the registry tag as-is)
 INSTALLER_VERSION_OCI="${INSTALLER_VERSION#v}"
 
+# v1.4.0+ (current): release lives in cozy-system; --create-namespace is REQUIRED.
+# The chart no longer templates the cozy-system Namespace (changed in cozystack/cozystack#2508);
+# a pre-install hook Job (cozy-system-labeler, in kube-system, hostNetwork,
+# tolerant of NotReady/CNI-not-ready) stamps the new namespace with
+# PSA enforce=privileged + cozystack.io/system=true. Passing the old
+# `--namespace kube-system` without --create-namespace makes the labeler hook
+# fail with `namespaces "cozy-system" not found` and aborts the install.
 helm --kube-context $CTX upgrade --install cozy-installer \
   oci://ghcr.io/cozystack/cozystack/cozy-installer \
   --version "$INSTALLER_VERSION_OCI" \
-  --namespace kube-system \
+  --namespace cozy-system --create-namespace \
   --set cozystackOperator.variant=$INSTALLER_VARIANT \
   --set cozystack.apiServerHost=$API_HOST \
   --set cozystack.apiServerPort=$API_PORT \
   --wait --timeout 10m
 ```
+
+For a v1.3.x install the form is `--namespace kube-system` with NO `--create-namespace` (the v1.3 chart templates the namespace itself). See `references/values-template.md` for both forms side by side — pick the one matching `installer_version`.
 
 For `talos` and `hosted`, drop `cozystack.apiServerHost` / `apiServerPort` if not required by the chart.
 
@@ -671,20 +680,45 @@ This phase merges what used to be Phase 7.5 (root Tenant ingress patch) into the
 
 **Why the patch is needed**: cozystack's dashboard ships gatekeeper (oauth2-proxy) which, on startup, does OIDC discovery against the **public FQDN** `https://keycloak.${HOST}/realms/cozy/.well-known/openid-configuration` — not an in-cluster service. Without the root ingress controller running, nothing listens on 443, gatekeeper CrashLoopBackOffs, the `cozy-dashboard/dashboard` HR sits in `Unknown: Running 'install' action with timeout of 10m0s` and then `InstallFailed: context deadline exceeded`, Flux remediates and retries forever. `cozy-fluxcd/flux-plunger` has a hard dependency on `cozy-dashboard/dashboard` and stays `False: dependency is not ready`. The phase would never go green.
 
+**The dashboard requires OIDC/Keycloak — it is not optional on the supported path.** The "Why the patch is needed" note above describes gatekeeper doing OIDC discovery against Keycloak. But Keycloak only deploys when `authentication.oidc.enabled: true` in the Platform Package — and that key defaults to `false`, with the `isp-full*` overlays NOT turning it on. If the skill enables `ingress` + sets `host` but never enables OIDC, the result on v1.4.2 is: no `cozy-keycloak` namespace, no Keycloak HR, and the dashboard falls back to its non-OIDC `token-proxy` container, which is **broken on v1.4.2** — the container starts, never binds `:8000` (connection refused, zero logs), and is killed by its own `/ping` liveness probe every ~45 s → CrashLoopBackOff → the `cozy-dashboard/dashboard` HR fails install → `flux-plunger` and the rest of the chain hang. The cluster reports 88/90 HRs Ready and looks "almost done" forever.
+
+So for a usable dashboard the skill must enable OIDC. This is exactly what cozystack's own e2e (`hack/e2e-install-cozystack.bats`) does — patch the root tenant host, then enable OIDC and expose Keycloak:
+
+```bash
+# Enable OIDC and expose keycloak (do this once, after the Package exists).
+kubectl --context $CTX patch package cozystack.cozystack-platform --type merge \
+  --patch '{"spec":{"components":{"platform":{"values":{"authentication":{"oidc":{"enabled":true}}}}}}}'
+
+# keycloak must be in publishing.exposedServices so its public ingress (and
+# therefore its LE cert + issuer URL) exists; api+dashboard alone are not enough.
+kubectl --context $CTX patch package cozystack.cozystack-platform --type merge \
+  --patch '{"spec":{"components":{"platform":{"values":{"publishing":{"exposedServices":["api","dashboard","keycloak"]}}}}}}'
+```
+
+Better: bake both into the Platform Package CR written in Phase 4/7 from the start (`authentication.oidc.enabled: true` and `keycloak` in `exposedServices`) so there is no second reconcile. The Phase 4 intake should collect a **dashboard auth** decision — OIDC/Keycloak (recommended; the only path with a working dashboard on 1.4.2) vs none (API-only, no web dashboard) — and only enable OIDC when the operator wants the dashboard. When OIDC is enabled, Keycloak needs a working LE cert for `keycloak.${HOST}`, so the same DNS/port-80 preconditions as the dashboard host apply (Phase 4 publishing gate already covers this — just make sure `keycloak.${HOST}` is inside the wildcard).
+
 Skip the root-Tenant patch entirely on `isp-hosted` or when the `system` bundle was disabled in Phase 4 — there is no root Tenant CR in those modes.
 
 Watch loop (per 30 s poll):
 
 ```bash
 # 1) Has the root Tenant CR landed? If yes and not yet patched, patch it.
+#    Set BOTH spec.host and spec.ingress. The root tenant ships with
+#    spec.host: "" and does NOT inherit publishing.host from the Platform
+#    Package (verified on v1.4.2). With an empty host the per-tenant ingress
+#    objects (dashboard.${HOST}, keycloak.${HOST}, …) render against an empty
+#    domain and Keycloak/dashboard never get usable URLs. $HOST is the
+#    publishing.host collected in Phase 4.
 if kubectl --context $CTX --namespace tenant-root get tenants.apps.cozystack.io root \
      --output jsonpath='{.metadata.name}' 2>/dev/null | grep -q '^root$'; then
-  CURRENT=$(kubectl --context $CTX --namespace tenant-root get tenants.apps.cozystack.io root \
-              --output jsonpath='{.spec.ingress}')
-  if [ "$CURRENT" != "true" ]; then
+  CUR_INGRESS=$(kubectl --context $CTX --namespace tenant-root get tenants.apps.cozystack.io root \
+                  --output jsonpath='{.spec.ingress}')
+  CUR_HOST=$(kubectl --context $CTX --namespace tenant-root get tenants.apps.cozystack.io root \
+                  --output jsonpath='{.spec.host}')
+  if [ "$CUR_INGRESS" != "true" ] || [ "$CUR_HOST" != "$HOST" ]; then
     kubectl --context $CTX --namespace tenant-root patch tenants.apps.cozystack.io root \
-      --type=merge --patch '{"spec":{"ingress":true}}'
-    echo "patched tenants/root.spec.ingress=true at $(TZ=UTC date -Iseconds)"
+      --type=merge --patch "{\"spec\":{\"ingress\":true,\"host\":\"${HOST}\"}}"
+    echo "patched tenants/root spec.host=${HOST} ingress=true at $(TZ=UTC date -Iseconds)"
   fi
 fi
 
@@ -692,6 +726,8 @@ fi
 kubectl --context $CTX get hr --all-namespaces \
   --output jsonpath='{range .items[?(@.status.conditions[?(@.type=="Ready" && @.status!="True")])]}{.metadata.namespace}/{.metadata.name} {end}'
 ```
+
+On the full `system`-bundle path you may also want the root tenant's `etcd`/`monitoring`/`seaweedfs` services (this is what cozystack's own `hack/e2e-install-cozystack.bats` patches): extend the patch to `{"spec":{"ingress":true,"host":"${HOST}","monitoring":true,"etcd":true,"seaweedfs":true}}` when those were selected in Phase 4. Leave them at their defaults otherwise.
 
 ```text
 HelmRelease $NS/$NAME has been Failing for $T minutes.
@@ -775,11 +811,27 @@ kubectl --context $CTX --namespace cozy-linstor exec deploy/linstor-controller -
 # Expect one ZFS row per storage-providing node with non-zero Capacity.
 ```
 
-## Phase 8.6 — Default StorageClasses (cozystack v1.3.x compatibility)
+## Phase 8.6 — Default StorageClasses
 
-Skip on `cluster.cozystack.installer_version` ≥ `1.4.0`. The cozystack `tenants.apps.cozystack.io` CRD in v1.4+ exposes `spec.storageClasses` and the operator creates the StorageClasses based on the tenant declaration. v1.3.x does **not** do this — the cluster reaches "all HRs Ready" with zero StorageClasses, and every stateful tenant workload sits in `Pending: pod has unbound immediate PersistentVolumeClaims` until the operator applies them by hand.
+**Gate on the live cluster, not on a version number.** Earlier guidance skipped this phase on `installer_version ≥ 1.4.0` on the assumption that the `tenants.apps.cozystack.io` CRD exposes `spec.storageClasses` and the operator creates the StorageClasses from the tenant declaration. That assumption is **false on at least v1.4.2** — the shipped tenant CRD has no `storageClasses` field (`kubectl get crd tenants.apps.cozystack.io -o yaml | grep -c storageClass` → `0`), nothing auto-creates StorageClasses, and the cluster reaches "all HRs Ready" with `kubectl get storageclass` empty. Every stateful workload (keycloak-db, etcd, seaweedfs, vmstorage/vlstorage) then sits in `Pending: unbound immediate PersistentVolumeClaims`, which cascades: keycloak CrashLoops with no DB → cozystack-api/controller/dashboard never go Ready.
 
-The skill writes two StorageClasses by default for v1.3.x:
+So the correct gate is a live check, not a version branch:
+
+```bash
+# Only create defaults if the cluster has none AND nothing else owns the names.
+EXISTING_SC=$(kubectl --context $CTX get storageclass --output name 2>/dev/null | wc -l | tr -d ' ')
+if [ "$EXISTING_SC" -gt 0 ]; then
+  echo "StorageClasses already present — skip (operator or a future chart created them):"
+  kubectl --context $CTX get storageclass
+else
+  echo "No StorageClasses — applying linstor defaults (see manifest below)."
+  # apply storageclasses-default.yaml
+fi
+```
+
+If a future cozystack release does start auto-creating StorageClasses, the live check skips this phase automatically — no version bump to the skill needed. Until then, the skill creates them on every version where the cluster comes up empty.
+
+The skill writes two StorageClasses:
 
 ```yaml
 # <config-dir>/storageclasses-default.yaml
@@ -822,6 +874,8 @@ kubectl --context $CTX get storageclass
 #   local                linstor.csi.linbit.com   ... false
 #   replicated (default) linstor.csi.linbit.com   ... true
 ```
+
+**Timing — create the StorageClasses inside the Phase 8 watch loop, not after it.** Apply them as soon as `local`/`replicated` are absent and the LINSTOR pools are registered (same gate as the inline pool registration), NOT after "all HRs Ready". stateful HRs in the `paas`/`monitoring` bundles (keycloak, etcd, seaweedfs, vmstorage) request PVCs that stay `Pending` until a default StorageClass exists, so an "all-HRs-Ready → then create SCs" ordering deadlocks the watch loop the same way the LINSTOR pool registration would. Folding SC creation into the loop (gated on `linstor-controller` Ready) lets those PVCs bind and the dependent HRs converge. One subtlety: a PVC created with no `storageClassName` **before** a default SC exists records `storageClassName: ""` and will NOT retroactively pick up a later default — but every cozystack chart pins `storageClassName` explicitly (`replicated`), so in practice the Pending PVCs bind as soon as the named class appears. If you do hit a genuinely class-less Pending PVC, it must be recreated after the default exists.
 
 `replicated` is marked as the default; `local` is a single-replica fallback for system workloads that don't need replication. On clusters with fewer than 3 storage-providing nodes, drop `placementCount` for `replicated` to match — the skill auto-derives this from `cozystack.storage.nodes[]` count.
 
@@ -991,7 +1045,7 @@ credentials:
 
 artifacts on disk:
   values file:       <config-dir>/cozystack-platform-package.yaml
-  helm release:      kube-system/cozy-installer
+  helm release:      cozy-system/cozy-installer
   cluster-scoped:    package.cozystack.io/cozystack.cozystack-platform
 
 handy commands:
@@ -1032,7 +1086,7 @@ If any phase hits a fatal failure that looks like an upstream bug or doc gap, fo
 - NEVER bootstrap Talos nodes or invoke `boot-to-talos` / `talm` from inside this skill — that flow lives in `/cozystack:talos-bootstrap`. Refuse and hand off.
 - NEVER auto-rollback a partially provisioned storage state — print backout commands and let the operator decide.
 - NEVER accept a custom `publishing.host` without an explicit operator confirmation that they own the domain and will configure wildcard DNS — the HTTP-01 cert solver fails silently otherwise. nip.io patterns skip this gate because nip.io is publicly hosted DNS.
-- ALWAYS patch `tenants/root.spec.ingress=true` from inside the Phase 8 watch loop as soon as the CR appears, on `system`-bundle installs. The OIDC chicken-and-egg makes Phase 8 unreachable otherwise — dashboard / keycloak / flux-plunger loop forever, every other downstream HR stalls on the missing root ingress. The CR can appear at any point during the watch loop; do not gate the patch behind a fixed pre-Phase-8 wait.
+- ALWAYS patch `tenants/root` with BOTH `spec.host=$HOST` and `spec.ingress=true` from inside the Phase 8 watch loop as soon as the CR appears, on `system`-bundle installs. The root tenant ships with `spec.host: ""` and does not inherit `publishing.host`, so an ingress-only patch leaves every per-tenant ingress object rendering against an empty domain. The OIDC chicken-and-egg makes Phase 8 unreachable otherwise — dashboard / keycloak / flux-plunger loop forever, every other downstream HR stalls on the missing root ingress. The CR can appear at any point during the watch loop; do not gate the patch behind a fixed pre-Phase-8 wait.
 - ALWAYS read variant overlays and `requirements.md` before declaring "this looks fine" — variant-specific checks (CP-label value, ZFS availability, KubeOVN MASTER_NODES) are easy to miss.
 - ALWAYS pull live data over cached assumption: `kubectl get` over "I think this is …".
 - ALWAYS write Phase 4 collected values to disk in `<config-dir>/cozystack-platform-package.yaml` before applying — the file is part of the diagnostic bundle if Phase 8 fails. ZFS pool registration is stored separately under `<config-dir>/.state.yaml` `cozystack.storage.nodes[]` and replayed by the Phase 8 post-Ready hook (there is no `LinstorSatelliteConfiguration` CR for the ZFS path).

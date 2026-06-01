@@ -62,7 +62,7 @@ All public. English. Singular first person. No private cluster names or client i
 ### Steps to reproduce
 
 1. Fresh <distribution> v<version> cluster, bootstrapped per `docs/v<X.Y>/install/kubernetes/<distro>/`.
-2. `helm upgrade --install cozy-installer oci://ghcr.io/cozystack/cozystack/cozy-installer --version <X.Y.Z> --namespace kube-system --set cozystackOperator.variant=<variant> --set cozystack.apiServerHost=<IP>`
+2. `helm upgrade --install cozy-installer oci://ghcr.io/cozystack/cozystack/cozy-installer --version <X.Y.Z> --namespace cozy-system --create-namespace --set cozystackOperator.variant=<variant> --set cozystack.apiServerHost=<IP>` (v1.4+; on v1.3.x use `--namespace kube-system` with no `--create-namespace`)
 3. Apply Platform Package with `spec.variant: <platform-variant>`. Full Package YAML attached.
 4. Observe `kubectl get hr --all-namespaces` — <which HR is stuck and what its condition says>.
 
