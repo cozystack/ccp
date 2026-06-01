@@ -373,7 +373,7 @@ cozystack:cluster-install plan
 context:           $CTX  ($API_URL)
 installer release: oci://ghcr.io/cozystack/cozystack/cozy-installer:$INSTALLER_VERSION_OCI    (OCI tag = git tag with the v stripped)
 installer variant: $INSTALLER_VARIANT
-helm release ns:   kube-system  (chart templates Namespace cozy-system itself)
+helm release ns:   cozy-system  (--create-namespace; labeler hook stamps PSA — v1.4+)
 platform variant:  $PLATFORM_VARIANT
 bundles:           $BUNDLES_CSV
 
@@ -408,8 +408,8 @@ storage (ZFS):
 actions on Continue:
   1. Storage provisioning per node (Phase 5.5; one approval per node)
   2. (generic only, unless --no-extractedprism) install extractedprism DaemonSet for kube-apiserver HA  (~1 min)
-  3. (if cozy-system namespace exists but unowned) adopt namespace into kube-system/cozy-installer
-  4. helm upgrade --install cozy-installer ... --namespace kube-system  (~2 min)
+  3. (if cozy-system namespace exists but unowned) adopt namespace into cozy-system/cozy-installer
+  4. helm upgrade --install cozy-installer ... --namespace cozy-system --create-namespace  (~2 min)
   5. wait deploy/cozystack-operator Available; wait CRD packages.cozystack.io Established
   6. kubectl apply --filename /tmp/.../platform-package.yaml
   7. wait root Tenant CR, patch spec.ingress=true (~3 min — required for Phase 8 to ever finish; breaks the OIDC chicken-and-egg)
@@ -1045,7 +1045,7 @@ credentials:
 
 artifacts on disk:
   values file:       <config-dir>/cozystack-platform-package.yaml
-  helm release:      kube-system/cozy-installer
+  helm release:      cozy-system/cozy-installer
   cluster-scoped:    package.cozystack.io/cozystack.cozystack-platform
 
 handy commands:
