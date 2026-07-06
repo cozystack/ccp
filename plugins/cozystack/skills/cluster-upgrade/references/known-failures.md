@@ -253,6 +253,44 @@ Restore from backup. There is no clean in-cluster recovery for a deleted `cozy-s
 3. Re-apply the Platform Package from rescue.yaml (manual review required; CRD schemas may have moved).
 4. Expect tenant disruption; communicate to users.
 
+## 8. VM `PausedIOError` loop after LINSTOR `auto-diskful` (DRBD block-size mismatch)
+
+### Symptom
+
+A running KubeVirt VM on a DRBD volume flips into `PausedIOError` and loops pause↔unpause every ~3 min. No data loss — all replicas stay `UpToDate`. dmesg on the node shows:
+
+```text
+drbd <res>: setting new queue limits failed
+```
+
+and the VM's qemu log shows an EINVAL on the disk:
+
+```text
+IO error device='ua-disk-boot' ... reason='Invalid argument'
+```
+
+Trigger: the VM was running on a node **without** a local replica (DRBD *diskless* + Primary), and LINSTOR `auto-diskful` converted it to *diskful* online (`toggle-disk`) while the VM held the device open.
+
+### Root cause
+
+LINSTOR `Linstor/Drbd/auto-block-size` (default-on since LINSTOR 1.33.2) raises the DRBD logical block size to 4096 on the **diskful** side only; the **diskless** side stays 512. qemu opens the device diskless (512) and caches 512-byte O_DIRECT alignment. The `auto-diskful` toggle then changes the device geometry 512→4096 under the open qemu → qemu keeps submitting 512-aligned O_DIRECT (e.g. MariaDB/InnoDB) → the now-4096 device returns EINVAL → `errorPolicy=stop` → pause.
+
+Underneath, on **DRBD 9.2.16 + kernel 6.x** `queue_limits_commit_update()` fails (the `setting new queue limits failed` line); the freshly-computed limits are discarded and the queue keeps stale values. A diskless device has no backing device whose limits can be stacked in, so the computed 4096 never commits and it stays 512.
+
+- Affected: Talos ≤ 1.12.x (DRBD 9.2.16), kernel 6.x, LINSTOR ≥ 1.33.2 with `auto-block-size` on.
+- Fixed upstream in **DRBD ≥ 9.2.17** ("Correctly request BLK_FEAT_STABLE_WRITES from the kernel" + "always two-phase-commit for attach"). Talos `release-1.13` ships DRBD 9.3.2. The changelog does not name this diskless-block-size path explicitly — validate in a lab before banking on it: a diskless resource with `block-size=4096` should report `logical_block_size=4096` with no `setting new queue limits failed`.
+
+### Recovery / mitigation
+
+```bash
+# Immediate: reopen the device cleanly (recomputes limits from the current geometry)
+virtctl restart <vm> -n <ns>
+```
+
+- **Reduce exposure** without an OS upgrade: keep VMs on nodes that hold a replica (volume affinity), or raise the replica count so most nodes have a local copy — fewer diskless opens toggled under a live VM.
+- **New volumes only:** set `Linstor/Drbd/auto-block-size=False` before create → diskful and diskless both stay 512 (aligned), no mismatch. Existing volumes already carry the 4096 diskful geometry, so this does **not** fix them.
+- **Permanent:** upgrade Talos to 1.13.x (DRBD 9.3.2) — a node-by-node OS upgrade, see `talos-node-upgrade.md`.
+
 ## Diagnostic quick reference
 
 | Question | Command |
