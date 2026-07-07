@@ -299,7 +299,12 @@ for node_idx in "${!INVENTORY_NODE_NAMES[@]}"; do
 machine:
   install:
     # CVE-2026-53359: disable KVM nested virtualization (guest-to-host escape mitigation).
-    # Lives under machine.install so talm re-applies it on every talm upgrade.
+    # kvm_intel/kvm_amd are built into the Talos kernel, so nested= is settable
+    # only from the kernel command line. On Talos >=1.12 pin grubUseUKICmdline
+    # false so the args land on the Talos-built cmdline (Talos rejects/ignores
+    # extraKernelArgs under the UKI cmdline). Applied by the installer, so it
+    # takes effect on "talm upgrade", not a plain "talm apply".
+    grubUseUKICmdline: false
     extraKernelArgs:
     - kvm_intel.nested=0
     - kvm_amd.nested=0

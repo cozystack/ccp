@@ -132,7 +132,9 @@ machine:
   install:
     disk: /dev/sda
     # CVE-2026-53359: disable KVM nested virtualization (guest-to-host escape mitigation).
-    # Under machine.install so talm re-applies it on every `talm upgrade`.
+    # On Talos >=1.12 pin grubUseUKICmdline false so the args land on the built
+    # cmdline. Takes effect on `talm upgrade` (installer re-run), not `talm apply`.
+    grubUseUKICmdline: false
     extraKernelArgs:
     - kvm_intel.nested=0
     - kvm_amd.nested=0
