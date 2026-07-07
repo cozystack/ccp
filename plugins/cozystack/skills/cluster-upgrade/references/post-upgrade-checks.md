@@ -28,6 +28,10 @@ kubectl --context $CTX get tenantcontrolplane -A
 alias linstor='kubectl exec -n cozy-linstor deploy/linstor-controller -ti -- linstor'
 linstor node list
 linstor resource list --faulty
+
+# 6. CVE-2026-53359 mitigation survived the OS upgrade (nested virtualization still off).
+#    machine.install.extraKernelArgs is re-applied by `talm upgrade`; confirm per node:
+talm -n <node-ip> read /proc/cmdline | grep -o 'kvm_intel.nested=[01]'   # expect kvm_intel.nested=0
 ```
 
 ## Targeted checks (map from change-risk summary)

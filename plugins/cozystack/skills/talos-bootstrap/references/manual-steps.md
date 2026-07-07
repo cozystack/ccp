@@ -131,6 +131,11 @@ machine:
   # Required: which interface to install Talos to.
   install:
     disk: /dev/sda
+    # CVE-2026-53359: disable KVM nested virtualization (guest-to-host escape mitigation).
+    # Under machine.install so talm re-applies it on every `talm upgrade`.
+    extraKernelArgs:
+    - kvm_intel.nested=0
+    - kvm_amd.nested=0
 ---
 apiVersion: v1alpha1
 kind: HostnameConfig
