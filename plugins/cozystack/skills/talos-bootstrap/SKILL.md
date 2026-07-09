@@ -296,18 +296,6 @@ for node_idx in "${!INVENTORY_NODE_NAMES[@]}"; do
   cat > "$f" <<EOF
 # talos-version: $TALOS_VERSION
 # talm-template: ../templates
-machine:
-  install:
-    # CVE-2026-53359: disable KVM nested virtualization (guest-to-host escape mitigation).
-    # kvm_intel/kvm_amd are built into the Talos kernel, so nested= is settable
-    # only from the kernel command line. On Talos >=1.12 pin grubUseUKICmdline
-    # false so the args land on the Talos-built cmdline (Talos rejects/ignores
-    # extraKernelArgs under the UKI cmdline). Applied by the installer, so it
-    # takes effect on "talm upgrade", not a plain "talm apply".
-    grubUseUKICmdline: false
-    extraKernelArgs:
-    - kvm_intel.nested=0
-    - kvm_amd.nested=0
 ---
 apiVersion: v1alpha1
 kind: HostnameConfig
@@ -414,7 +402,6 @@ If `state.cluster.vip.per_node[$node]` exists but the LinkConfig doc is missing,
 Present each `nodes/<name>.yaml` for review. Things to spot before apply:
 
 - `machine.install.image` should be `ghcr.io/cozystack/cozystack/talos:<tag>`. The cozystack preset sets this; surface if missing.
-- `machine.install.extraKernelArgs` should include `kvm_intel.nested=0` and `kvm_amd.nested=0` — the CVE-2026-53359 (Januscape) nested-virtualization guest-to-host escape mitigation. The Phase 6.5 overlay and the cozystack preset set these; surface if missing (e.g. an older preset).
 - `machine.kernel.modules` should list drbd / zfs / spl / openvswitch / vfio_pci / vfio_iommu_type1.
 - For CP nodes: `machine.type: controlplane`, optional `machine.network.interfaces[].vip` for HA.
 - `machine.install.disk` defaults to a heuristic — confirm it picks the right system disk on multi-disk nodes (operator can edit nodes/<name>.yaml before apply).
