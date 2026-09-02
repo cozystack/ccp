@@ -359,10 +359,10 @@ Adaptations:
 - <file>: <one-line description of each adaptation>
 - ...
 
-Assisted-By: Claude <noreply@anthropic.com>
+Assisted-by: LLM
 ```
 
-The `Assisted-By: Claude` trailer is mandatory per the cozystack project commit standard (CLAUDE.md: "ALL commits MUST use git commit --signoff" and Claude attribution via this trailer line). Do not strip it.
+The `Assisted-by: LLM` trailer is mandatory on agent-assisted commits, as `docs/agents/contributing.md` in cozystack/cozystack specifies: it discloses assistance without naming a model or vendor. Never write a model or vendor name into a trailer or authorship line, and never add a `Claude-Session:` trailer or a session URL to a commit message or PR text. Do not strip the trailer.
 
 Run:
 
@@ -377,7 +377,7 @@ chore(packages/$PKG_TYPE/$PKG_NAME): bump $PKG_NAME to $TARGET_VERSION
 Adaptations:
 - ...
 
-Assisted-By: Claude <noreply@anthropic.com>
+Assisted-by: LLM
 EOF
 
 git -C "$REPO_ROOT" add "$PKG_DIR"
