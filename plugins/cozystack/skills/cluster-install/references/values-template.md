@@ -97,13 +97,13 @@ spec:
             enabled: true
         authentication:
           oidc:
-            enabled: true               # REQUIRED for a working web dashboard.
-            # Defaults to false; the isp-full* overlays do NOT turn it on.
-            # When false, no Keycloak is deployed and the dashboard falls back
-            # to its token-proxy container, which is broken on v1.4.2 (never
-            # binds :8000, CrashLoops on its own liveness probe). Set true to
-            # deploy Keycloak and switch the dashboard to oauth2-proxy. Omit
-            # (leave false) only for an API-only install with no web dashboard.
+            enabled: false              # OIDC OFF at install (installer >=1.5.0).
+            # On >=1.5.0, true at install switches the system bundle to the
+            # oidc engine variant (dashboard dependsOn Keycloak) and deadlocks
+            # the install (~65%-plateau); leave false so the platform converges
+            # on the token-proxy dashboard, then flip true AFTER convergence
+            # (SKILL.md Phase 8 step 3). On v1.4.x the token-proxy is broken, so
+            # set this true at install there instead (SKILL.md Phase 8 gate).
         networking:
           podCIDR: "10.244.0.0/16"      # cozystack default, from packages/core/platform/values.yaml
           podGateway: "10.244.0.1"      # first IP of podCIDR
@@ -117,9 +117,9 @@ spec:
           exposedServices:
             - api
             - dashboard
-            - keycloak                  # REQUIRED when authentication.oidc.enabled
-            #                             is true — gives Keycloak its public
-            #                             ingress + LE cert + issuer URL.
+            - keycloak                  # Needed once OIDC is flipped on post-convergence
+            #                             (SKILL.md Phase 8 step 3): gives Keycloak its
+            #                             public ingress + LE cert. Harmless while off.
           externalIPs:
             - 192.0.2.10
           exposure: externalIPs         # or "loadBalancer"
