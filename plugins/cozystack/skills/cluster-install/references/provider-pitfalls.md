@@ -15,6 +15,27 @@ How `cozystack:cluster-install` Phase 4 catches this:
 - Reads `cozystack_intake.external_ips.strategy` from the wizard (default `internal` when `intent_hints.platform: oci`).
 - Validates against `Node.status.addresses`: when `InternalIP` ≠ `ExternalIP` on a NAT-fronted platform, refuses the `external` strategy and explains the failure mode.
 
+## OCI: current Talos disk images don't boot from qcow2 — import as streamOptimized VMDK
+
+**Scope note**: Talos node imaging is `cozystack:talos-bootstrap` territory, not `cluster-install`. This lives here as a cross-reference because it bites OCI installs before a cluster ever exists — a non-booting image is discovered as "the whole cluster is dead", not as a node-prep detail.
+
+**Symptom**: a fresh OCI Custom Image built from a Talos `nocloud`/metal `qcow2` (Talos 1.11.5+) never comes up. With UEFI firmware the instance drops to the UEFI shell; with BIOS firmware the serial console stays empty; the Talos API (`:50000`) never answers, so `talm`/`talosctl` time out. Tracked upstream as siderolabs/talos#12557.
+
+**Mechanism**: OCI's qcow2 import path produces a disk the instance firmware won't boot for current Talos images. The same Talos disk boots fine when imported in a different container format.
+
+**Fix**: convert the identical Talos disk to a **streamOptimized VMDK** and import it with `--source-image-type VMDK`, launch profile firmware **BIOS**:
+
+```bash
+# Produce a streamOptimized VMDK from the Talos raw/qcow2 disk.
+qemu-img convert -O vmdk -o subformat=streamOptimized \
+  talos-oci.raw talos-oci.vmdk
+# Upload to object storage, then:
+#   oci compute image import from-object ... --source-image-type VMDK
+# and launch instances with the BIOS launch mode (not UEFI).
+```
+
+**Practice — verify BOOT before recreating the cluster**: import + launch the new image on a single throwaway instance and confirm the serial console shows a Linux boot line and `enabling system extension schematic <id>` BEFORE wiring the image into IaC and recreating every node. A non-booting image discovered after a full recreate is a far longer outage than a one-instance smoke test.
+
 ## GCP NAT'd external IPs
 
 **Symptom**: same as OCI — `Ready=True`, dashboard unreachable, RST/timeout.
@@ -92,7 +113,7 @@ The skill's Phase 5.5 step 7 (pre-existing-data check) catches this before `zpoo
 
 **Mechanism**: in v1.3.x the `isp-full` overlay does not enable Keycloak; cozystack's dashboard ships its own self-issued OIDC provider (`cozystack-issuer`). Keycloak is opt-in via a separate bundle. v1.4+ may change this.
 
-**Fix**: not really a fix — clarification. The dashboard works without Keycloak via the bundled self-issued OIDC. Operators expecting external SSO need to layer Keycloak themselves (out of scope for v1 of `cozystack:cluster-install`).
+**Fix**: version-dependent. On v1.3.x the dashboard works without Keycloak via the bundled self-issued OIDC (`cozystack-issuer`); external SSO needs Keycloak layered by hand. On v1.4.x the OIDC-off token-proxy dashboard is broken (`/ping` liveness CrashLoop), so Keycloak/OIDC must be enabled at install for a working web dashboard. On v1.5.0+ the token-proxy was fixed (a `startupProbe` backstop landed in v1.5.0), so `cozystack:cluster-install` installs with OIDC OFF and flips it on after the platform converges (SKILL.md Phase 8) — not at install, because on 1.6.x OIDC-at-install deadlocks the platform behind the root-ingress/dashboard cycle.
 
 ## `api.<host>` ingress speaks TCP passthrough, not HTTP
 

@@ -21,9 +21,9 @@ Pod-level look:
 
 ```bash
 kubectl --context $CTX -n cozy-dashboard get pods
-# gatekeeper-...  CrashLoopBackOff
+# incloud-web-gatekeeper-...  CrashLoopBackOff
 
-kubectl --context $CTX -n cozy-dashboard logs deploy/gatekeeper | head -20
+kubectl --context $CTX -n cozy-dashboard logs -l app.kubernetes.io/name=gatekeeper --tail=20
 # Unable to fetch OIDC well-known: dial tcp <FQDN>:443: connection refused
 # (or: x509: certificate signed by unknown authority)
 ```
@@ -40,34 +40,93 @@ This is a chicken-and-egg of the `isp-full*` variant + OIDC combination, not a b
 - The cozystack dependency graph is built so gatekeeper can't come up before ingress, and dashboard can't come up before gatekeeper.
 - But flux-plunger waits on dashboard, which waits on ingress, which waits on the missing manual patch.
 
-`cozystack:cluster-install` Phase 8 patches `tenants/root` with both `spec.host` and `spec.ingress=true` inline as soon as the CR appears in the watch loop, which avoids the trap entirely on a fresh install regardless of when the CRD lands relative to other HRs.
+**Primary avoidance (installer ≥ 1.5.0) — install OIDC-off, converge, THEN enable OIDC.** On 1.6.x, `authentication.oidc.enabled: true` switches the system bundle to the `oidc` engine variant, which makes the dashboard `dependsOn` Keycloak (`packages/core/platform/sources/cozystack-engine.yaml`). If OIDC is enabled at install the whole chain deadlocks before the root Tenant CR even appears, so patching the tenant cannot rescue it. `cozystack:cluster-install` therefore applies the Platform Package with OIDC **off**, lets every HR converge, patches `tenants/root` (`spec.host` + `spec.ingress=true`) inline as soon as the CR appears, waits for `root-ingress-controller` to be Available, and only THEN flips `authentication.oidc.enabled=true` (matches cozystack's own `hack/e2e-install-cozystack.bats`). The inline tenant patch is for correct public URLs and to unblock the later OIDC flip — it is not itself the deadlock fix. This is the installer_version ≥ 1.5.0 path; on v1.4.x the OIDC-off token-proxy dashboard is broken, so OIDC is enabled at install there instead (SKILL.md Phase 8 version gate). See SKILL.md Phase 8.
 
 **Recovery on an install that has already stalled in Phase 8**
 
+On 1.6.x the stall is almost always OIDC enabled at install, and the root Tenant CR never appeared — so patching the tenant is not the first step (the patch has nothing to target). Take OIDC back off in the Package first, so the dashboard-gated chain converges and the Tenant CR shows up:
+
+```bash
+# Only if authentication.oidc.enabled was set at install time.
+kubectl --context $CTX patch package cozystack.cozystack-platform --type merge \
+  --patch '{"spec":{"components":{"platform":{"values":{"authentication":{"oidc":{"enabled":false}}}}}}}'
+# Disabling OIDC can strand keycloak-configure in Terminating; if that HR sticks,
+# recover with the off->on toggle steps in SKILL.md Phase 8.
+```
+
+Then wait for the root Tenant CR and patch host + ingress:
+
 ```bash
 kubectl --context $CTX --namespace tenant-root wait tenants.apps.cozystack.io/root \
-  --for=jsonpath='{.metadata.name}'=root --timeout=300s
+  --for=jsonpath='{.metadata.name}'=root --timeout=600s
 
 kubectl --context $CTX --namespace tenant-root patch tenants.apps.cozystack.io root \
   --type=merge --patch "{\"spec\":{\"ingress\":true,\"host\":\"${HOST}\"}}"
 ```
 
-Within ~2 min:
+Within ~2 min of the patch:
 
 - `root-ingress-controller` pods come up in `tenant-root-ingress` namespace.
 - External IPs from the LB pool get the wildcard ingress.
 - `dashboard.${HOST}` / `keycloak.${HOST}` become reachable from the public internet.
-- gatekeeper does OIDC discovery successfully, exits CrashLoop.
-- dashboard / keycloak HRs reach Ready.
-- flux-plunger picks up the dashboard dependency, reaches Ready.
+- the dashboard (token-proxy container) and the rest of the chain reach Ready; the cluster converges to `N/N Ready`.
 
-The whole cluster typically reaches `N/N Ready` within 5 min of the patch.
+Once every HR is Ready and `root-ingress-controller` is Available, re-enable OIDC exactly once (SKILL.md Phase 8 step 3) and wait for the `incloud-web-gatekeeper` rollout. If the cluster was already OIDC-off (the operator followed the skill and only the tenant patch was missing), skip the disable/re-enable steps and apply the tenant patch alone.
 
-If gatekeeper still crashes after the patch, double-check:
+If gatekeeper still crashes after re-enabling OIDC, double-check:
 
 1. DNS: `dig +short keycloak.${HOST}` returns the external IPs.
 2. cert-manager certificate for `*.${HOST}` is Ready (gatekeeper rejects self-signed unless `insecureSkipVerify: true`).
 3. Port 80 is reachable from the public internet (Let's Encrypt HTTP-01 needs this — without a valid cert, gatekeeper TLS verify still fails).
+
+## CNPG webhook unreachable from the apiserver (Cilium host-BPF stale endpoint)
+
+**Symptom**
+
+During a fresh install on Cilium + KubeOVN, Keycloak and every postgres-backed HR stall. The apiserver rejects admission on the cnpg (cloudnative-pg) mutating webhook with `connection refused` to the webhook ClusterIP; the webhook's `failurePolicy: Fail` then blocks every `Cluster` create. The webhook is reachable from ordinary pods but NOT from the apiserver.
+
+```bash
+kubectl --context $CTX get events --all-namespaces | grep -i webhook
+# ... failed calling webhook "...cnpg...": ... dial tcp <WEBHOOK_CIP>:443: connect: connection refused
+```
+
+**Cause**
+
+The cnpg operator flaps on leader-election during early KubeOVN convergence and restarts with a new pod IP. Cilium's HOST-side service BPF keeps the stale (dead) backend for the webhook ClusterIP, so host-network clients (the apiserver) dial a dead endpoint while pod-network clients get the fresh one. Not a cnpg bug and not a config error — a Cilium host-BPF staleness window during install.
+
+**Diagnostic** — the tell is host-network vs pod-network asymmetry. `nc` to the webhook ClusterIP SUCCEEDS from a normal pod but FAILS from a `hostNetwork` pod (the apiserver's path), while cert-manager's webhook ClusterIP and `10.96.0.1` both SUCCEED from that same host-network pod:
+
+```bash
+# WEBHOOK_CIP = ClusterIP of the cnpg webhook Service in cozy-postgres-operator.
+kubectl --context $CTX run nc-pod --rm --stdin --tty --restart=Never \
+  --image=busybox -- nc -zvw3 $WEBHOOK_CIP 443        # from pod network → OK
+kubectl --context $CTX run nc-host --rm --stdin --tty --restart=Never \
+  --overrides='{"spec":{"hostNetwork":true}}' \
+  --image=busybox -- nc -zvw3 $WEBHOOK_CIP 443        # from host network → refused
+```
+
+**Recovery** — force endpoint churn so Cilium resyncs the host BPF:
+
+```bash
+kubectl --context $CTX rollout restart deploy/postgres-operator-cloudnative-pg \
+  --namespace cozy-postgres-operator
+
+# Verify the webhook answers from the apiserver's path again:
+kubectl --context $CTX create --dry-run=server --filename - <<'EOF'
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: webhook-probe
+  namespace: default
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
+EOF
+# Expect: admitted (dry-run), not "connection refused".
+```
+
+If it recurs, the same restart clears it.
 
 ## LINSTOR: HR stuck with no storage pool registered
 
