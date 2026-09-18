@@ -28,7 +28,7 @@ CLAUDE.md                          # this file — contributor guidance
 
 Two plugins ship today:
 
-- `plugins/cozystack/` — platform bundle (10 skills: wizard, talos-bootstrap, talos-reset, ubuntu-bootstrap, cluster-install, debug, cluster-upgrade, package-deploy, package-bump, external-app-create).
+- `plugins/cozystack/` — platform bundle (13 skills: wizard, talos-bootstrap, talos-reset, ubuntu-bootstrap, cluster-install, debug, cluster-upgrade, package-deploy, package-bump, external-app-create, dev-ui-bootstrap, comment-audit, comment-trim).
 - `plugins/linstor/` — storage-recovery (1 skill: recover).
 
 Multi-skill plugin shape: every plugin has one `.claude-plugin/plugin.json` at its root, and one directory per skill under `skills/`. Skills are addressed by Claude Code as `/<plugin>:<skill>` (e.g. `/cozystack:wizard`).
