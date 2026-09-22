@@ -140,6 +140,12 @@ Run both general **and** targeted-per-change checks from Step 1.
 
 Show user: result (success/partial/failed), before→after version, HR/Package totals, any warnings, one-line outcome per targeted check.
 
+## Node / Talos OS upgrades
+
+The steps above cover only the `cozy-installer` Helm upgrade. When a release also moves the **Talos OS** or **Kubernetes** version, that is a separate node-by-node procedure — and on DRBD/LINSTOR-backed clusters the sequencing (one node at a time, wait for each node's DRBD resources to return `UpToDate` before the next) is what keeps VMs alive. Order the layers Talos → Kubernetes → Cozystack, since some fixes ship only in a newer Talos extension bundle (e.g. a DRBD kernel-module fix) and must land first.
+
+**Full node-upgrade runbook:** read `references/talos-node-upgrade.md`.
+
 ## Rollback
 
 `helm --kube-context $CTX rollback cozystack <rev> --namespace cozy-system` is possible but has caveats (data migrations don't reverse). Before rolling back, snapshot: `kubectl --context $CTX get packages.cozystack.io -A -o yaml > pre-rollback.yaml`.
@@ -162,6 +168,7 @@ High-blast-radius stuck states — stuck helm `uninstalling`, Kamaji datastore c
 | HR `UninstallFailed, failed to delete release` | Stuck helm history (known-failures #1) |
 | TCP `INSTALLED VERSION` diverges from `VERSION` | Kamaji upgrade stuck (known-failures #4) |
 | `cozy-system` namespace gone | Missing `helm.sh/resource-policy=keep` (known-failures #7); restore from backup |
+| VM `PausedIOError` loop after a node reboot / `auto-diskful` | DRBD block-size mismatch on 9.2.16, Talos ≤ 1.12 (known-failures #8) |
 
 ## Common mistakes
 
@@ -174,7 +181,7 @@ High-blast-radius stuck states — stuck helm `uninstalling`, Kamaji datastore c
 
 ## References
 
-- Skill files: `references/release-notes-analysis.md`, `references/preflight-checks.md`, `references/post-upgrade-checks.md`, `references/rollback.md`, `references/known-failures.md`
+- Skill files: `references/release-notes-analysis.md`, `references/preflight-checks.md`, `references/post-upgrade-checks.md`, `references/rollback.md`, `references/known-failures.md`, `references/talos-node-upgrade.md`
 - Upstream (pick the version matching your target from the docs site version selector): `https://cozystack.io/docs/<vX.Y>/operations/cluster/upgrade/`
 - Troubleshooting checklist: `https://cozystack.io/docs/<vX.Y>/operations/troubleshooting/`
 - Releases: `https://github.com/cozystack/cozystack/releases`
