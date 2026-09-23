@@ -65,6 +65,10 @@ State the file list and the per-file claim list, then get the operator's go-ahea
 
 A paraphrase is a second copy of the argument and will drift; a pointer cannot. Cite the real section heading so the reference survives the document being reorganized.
 
+**A pointer replaces the argument; it never accompanies it.** Adding the citation and leaving the explanation above it is the "second copy" this rule exists to prevent — and it is an easy mistake to make, because the block now ends with something that looks like the fix. If you write a pointer, the thing it points at goes in the same edit.
+
+**Tighten** — where the audit says the claim stays but the wording derives it. Rewrite to the shortest form that still carries the claim, and check the result the same way as a cut: the block must now *state* the constraint rather than *argue* to it. "It is all true" does not earn nine sentences where two carry the same warning.
+
 **Keep the claim** — mechanism, aliasing and mutation hazards, ordering constraints, "why not the obvious approach", deliberate omissions that read as bugs, non-local constraints, and anything whose violation fails silently. Verbatim by default; tighten only where the wording is genuinely in the way. When in doubt about a comment in this class, keep it: a surviving mechanism note costs a reviewer three seconds, and deleting one costs the next person an afternoon.
 
 **Deduplicate.** Where an argument appears in a package doc and again inline, one of them goes. Keep the copy at the site that constrains the code — usually the branch or call site, since that is where someone is standing when they consider changing it — and delete the distant one.
@@ -73,7 +77,7 @@ A paraphrase is a second copy of the argument and will drift; a pointer cannot. 
 
 ## Phase 3 — Verify
 
-Two checks, in order. Neither is optional — a trim whose correctness rests on having read the diff carefully is worth much less than one that has been proven.
+Three checks, in order. None is optional — a trim whose correctness rests on having read the diff carefully is worth much less than one that has been proven.
 
 1. **Comments only.** The bundled script strips comments from both sides and compares what is left, so a stray edit cannot hide in a large diff:
 
@@ -86,7 +90,9 @@ Two checks, in order. Neither is optional — a trim whose correctness rests on 
 
    It is string-aware — URLs inside literals, Go raw strings, rune literals and Rust lifetimes do not fool it. Exit 0 means no code moved; 1 names the files where it did; 2 means a file's language was not recognised and needs a human look. Investigate any non-zero result before reporting; the usual cause is a real accidental edit.
 
-2. **The project's own checks** for the packages touched — build, linter, and the tests for those packages only, never the whole suite. A comment trim cannot break a test, which is exactly why a failure here means something else went wrong and must be chased rather than waved through.
+2. **Pointer invariant.** For every `see docs/...` you added, confirm the explanation it replaces is gone — grep the file for a distinctive phrase from the deleted argument and expect no hit. A pointer sitting on top of the prose it cites is the failure this skill's central rule names, and it survives the comments-only check untouched.
+
+3. **The project's own checks** for the packages touched — build, linter, and the tests for those packages only, never the whole suite. A comment trim cannot break a test, which is exactly why a failure here means something else went wrong and must be chased rather than waved through.
 
 ## Phase 4 — Report and stop
 

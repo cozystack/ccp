@@ -1,6 +1,6 @@
 ---
 name: comment-audit
-description: Audit code comments for design-doc prose — rationale, product motivation, before/after narrative, incident retelling — and report which ones to cut, which to keep, and which arguments are restated at several sites. Use this whenever reviewing a diff or PR that reads comment-heavy, whenever someone says a change has "too many comments", "excessive comments", "comment bloat", "essays in the code", or asks whether comments are justified, and as a matter of course on any PR that adds a large block of commentary to a function or package doc. Reports only; pair with `cozystack:comment-trim` to apply the cuts. Language-agnostic — works on any repository, not only Cozystack ones.
+description: Audit code comments for design-doc prose — rationale, product motivation, before/after narrative, incident retelling — and report which ones to cut, which to tighten, which to keep, and which arguments are restated at several sites. Use this whenever reviewing a diff or PR that reads comment-heavy, whenever someone says a change has "too many comments", "excessive comments", "comment bloat", "essays in the code", or asks whether comments are justified, and as a matter of course on any PR that adds a large block of commentary to a function or package doc. Reports only; pair with `cozystack:comment-trim` to apply the cuts. Language-agnostic — works on any repository, not only Cozystack ones.
 argument-hint: "[PR number | file | diff base] [--all] (default: lines the change added)"
 ---
 
@@ -35,6 +35,8 @@ A comment is design-doc prose when it argues rather than informs:
 - **Restating the code** — the comment and the line below it say the same thing.
 
 The test is not length. A twelve-line comment about a mutation hazard is fine; a three-line one about why the product wants this is not.
+
+But length is not free either, and "it is all true" is not a defence. A doc comment is a **reference, not an explanation**: it tells a reader what they must not get wrong, in the fewest words that carry the claim. Prose that derives a conclusion — laying out the question, the wrong answer, then the right one — belongs in the design doc even when every sentence of it is correct. A block of nine true mechanism sentences where two would do is a finding, and the verdict for it is *Tighten*, not *Keep*.
 
 ## Do not judge by density
 
@@ -72,11 +74,33 @@ Two copies of an argument means one of them goes. Where a comment exists to stop
 
 A paraphrase is a second copy that will drift; a pointer cannot.
 
+**Grep finds copied phrasing. It cannot find a paraphrase, and the nearest copy is usually a paraphrase.** So follow the grep with a reading check on every substantial block: look at what is declared immediately around it — the type's field docs, the neighbouring case arms, the function signature itself — and ask whether the block re-states in prose what those already say in place. This is the highest-yield duplication in practice and grep will never show it, because the two copies share no distinctive words:
+
+```go
+// RouteLink is the ifindex the FIB would send out of.
+// OwnerLink is the ifindex the address is CONFIGURED on.
+...
+// Two questions hide in here: the FIB answers "how would I SEND to this
+// address", which says nothing about the link the address lives on...
+```
+
+The field docs already carry the distinction; the paragraph is a second copy in expository form. Keep the copy at the declaration, where a reader meets the concept, and cut the prose restatement.
+
 ## Phase 4 — Build the keep list
 
 Every audit must name the comments that should survive. Without it the request reads as "fewer comments" and comes back as the same arguments in shorter sentences.
 
 Build this list as you go through Phase 2 rather than as an afterthought — a keep list assembled at the end tends to be thin, because by then the reader is in cutting mode.
+
+## Phase 5 — Sort keepers into Keep and Tighten
+
+A two-verdict audit (cut or keep) has nowhere to put the most common defect in a comment-heavy change: a block whose claims are all legitimate and which is still three times longer than it needs to be. Every block that survives gets a second pass:
+
+- the claim is load-bearing and the wording is already minimal → **Keep**;
+- the claim is load-bearing but stated expositionally → **Tighten**, and quote the shorter form you propose, so the author is choosing between two concrete texts rather than being told to trim;
+- the claim is load-bearing and a linked design doc already carries it → **Tighten to the pointer**: the comment collapses to `// see docs/<path> §"<section>"` and the explanation goes. A pointer plus the explanation it points at is two copies, not a citation.
+
+Read each surviving block **cold** before deciding: not as the person who worked the problem out, but as someone who arrives at the file with no memory of the change. Every sentence feels load-bearing to whoever just derived it, which is why a self-audit that skips this step reliably keeps everything.
 
 ## Report format
 
@@ -87,6 +111,11 @@ Build this list as you go through Phase 2 rather than as an afterthought — a k
 ## Cuts
 **<file>**
 - `:<line>` — "<quoted text>". <one line: which category, and what survives if anything>
+...
+
+## Tighten
+**<file>**
+- `:<line>` — <what the block claims, and why the claim stays>. Proposed: "<the shorter text>"
 ...
 
 ## Keep
