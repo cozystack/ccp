@@ -7,7 +7,7 @@ Phase 5 of `cozystack:debug` renders one of these templates into `<config-dir>/d
 ```markdown
 **Cozystack version**: <X.Y.Z>
 **Kubernetes**: <distro> <version>
-**Platform variant**: <isp-full | isp-full-generic | isp-hosted | default>
+**Platform variant**: <isp-full | isp-full-generic | isp-hosted | isp-slim | isp-slim-generic | isp-hosted-slim | default>
 **Install path**: <bare-metal-talos | bare-metal-ubuntu | existing-k8s | managed-k8s>
 **Nodes**: <N> × <arch> on <OS>
 
