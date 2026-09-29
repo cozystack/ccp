@@ -46,9 +46,12 @@ Typical counts for orientation (not gospel):
 
 | Variant | Approx HR count |
 | ----------- | ----------- |
-| `isp-full` | 40–50 |
-| `isp-full-generic` | 40–50 |
-| `isp-hosted` | 15–20 |
+| `isp-full` | ~90, plus tenant-root releases |
+| `isp-full-generic` | ~90, plus tenant-root releases |
+| `isp-hosted` | ~60 on v1.7.0+, plus tenant-root releases |
+| `isp-slim` | ~27 before opt-ins, plus tenant-root releases |
+| `isp-slim-generic` | ~27 before opt-ins, plus tenant-root releases |
+| `isp-hosted-slim` | ~18 before opt-ins, plus tenant-root releases |
 | `default` | 1–3 |
 
 ## Reading a stuck HR

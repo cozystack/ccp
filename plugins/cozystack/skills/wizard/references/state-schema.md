@@ -141,13 +141,15 @@ cozystack_intake:
   # Both names come from upstream cozystack files; do not invent values.
   # Real upstream platform_variant overlays in cozystack v1.3.x:
   #   default, isp-full, isp-full-generic, isp-hosted
+  # plus, on releases that ship them, the minimal isp-slim, isp-slim-generic,
+  # isp-hosted-slim (base platform only; iaas refused; the rest opt-in)
   # Typical pairing:
-  #   installer_variant=talos   ↔ platform_variant=isp-full
-  #   installer_variant=generic ↔ platform_variant=isp-full-generic
-  #   installer_variant=hosted  ↔ platform_variant=isp-hosted
+  #   installer_variant=talos   ↔ platform_variant=isp-full / isp-slim
+  #   installer_variant=generic ↔ platform_variant=isp-full-generic / isp-slim-generic
+  #   installer_variant=hosted  ↔ platform_variant=isp-hosted / isp-hosted-slim
   bundles: ["system", "paas", "iaas", "naas"]
   installer_variant: "talos"                 # generic / talos / hosted (derived from target + workload_class)
-  platform_variant: "isp-full"               # default / isp-full / isp-full-generic / isp-hosted
+  platform_variant: "isp-full"               # default / isp-full / isp-full-generic / isp-hosted / isp-slim / isp-slim-generic / isp-hosted-slim
 
   # Storage layout preference (Talos / Ubuntu routes; "hosted" target skips)
   storage_pref:
@@ -202,7 +204,7 @@ Written by `cluster-install`. Mirrors what gets serialised to `<config-dir>/cozy
 ```yaml
 cozystack:
   installer_variant: "talos"              # generic / talos / hosted — same key as cozystack_intake
-  platform_variant: "isp-full"            # default / isp-full / isp-full-generic / isp-hosted — upstream overlay name
+  platform_variant: "isp-full"            # default / isp-full / isp-full-generic / isp-hosted / isp-slim / isp-slim-generic / isp-hosted-slim — upstream overlay name
   bundles: ["system", "paas", "iaas", "naas"]
   api_server_host: "127.0.0.1"            # or CP1_IP / VIP / "" (hosted)
   api_server_port: "7445"

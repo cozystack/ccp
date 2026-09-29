@@ -29,7 +29,7 @@ lsmod | awk '{print $1}' | grep -Ex 'overlay|br_netfilter|nf_conntrack|ip_tables
 
 Required: `overlay`, `br_netfilter`, `nf_conntrack`, `ip_tables`, `iptable_nat`.
 
-For Kube-OVN (non-hosted): `openvswitch`, `geneve` (autoloaded by ovs userspace — soft check).
+For Kube-OVN (`isp-full*` only; not needed on hosted or slim variants): `openvswitch`, `geneve` (autoloaded by ovs userspace — soft check).
 
 For DRBD storage (non-hosted): either `drbd` already in `lsmod` or a buildable kernel headers tree (`/usr/src/linux-headers-$(uname -r)`) so piraeus-operator can compile in-cluster. Ubuntu Secure Boot needs `drbd-dkms` pre-installed and signed — `lsmod | grep drbd` must succeed before install.
 
@@ -139,14 +139,14 @@ Skip the whole storage section on hosted variant.
 
 ### Talos cozystack-tuned image — Phase 3 gate (Talos only)
 
-If Phase 2 detected Talos on any node, run these four checks. **All four must pass on every Talos node**, otherwise Phase 3 STOP GATE 1 fails with `cozystack:cluster-install` refusing to continue and pointing at `/cozystack:talos-bootstrap`.
+If Phase 2 detected Talos on any node, run these four checks. **All four must pass on every Talos node** (on `isp-slim` the openvswitch check is dropped, there is no Kube-OVN), otherwise Phase 3 STOP GATE 1 fails with `cozystack:cluster-install` refusing to continue and pointing at `/cozystack:talos-bootstrap`.
 
 ```sh
 # Kernel modules (cozystack-tuned image ships these as extensions; vanilla Talos does not)
 lsmod | awk '{print $1}' | grep -Ex 'drbd|zfs|openvswitch'
 ```
 
-All three names must appear in the output.
+All three names must appear in the output (`drbd` and `zfs` on `isp-slim`).
 
 ```sh
 # LVM filter — cozystack-tuned machine-config writes this verbatim
@@ -181,7 +181,8 @@ KubeOVN's chart looks nodes up by a key=value pair from `MASTER_NODES_LABEL`. **
 | ----------- | ----------- |
 | `isp-full` (Talos) | `node-role.kubernetes.io/control-plane=""` (empty value — Talos default) |
 | `isp-full-generic` (k3s / kubeadm / RKE2) | `node-role.kubernetes.io/control-plane=true` (literal string `true`) |
-| `isp-hosted` | not used — KubeOVN is not deployed |
+| `isp-hosted`, `isp-hosted-slim` | not used — KubeOVN is not deployed |
+| `isp-slim`, `isp-slim-generic` | not used — networking is Cilium alone |
 | `default` | not used unless the operator hand-rolls KubeOVN |
 
 The lookup compares the value byte-for-byte. If it doesn't match exactly, the chart `fail`s with:
@@ -214,7 +215,7 @@ If the value does **not** match what the variant expects, surface two recovery p
 
 2. **Pin explicit IPs via `MASTER_NODES`** — bypasses the lookup entirely. Collect the CP nodes' internal IPs (`kubectl get nodes -o wide`, INTERNAL-IP column) and set `networking.kubeovn.MASTER_NODES` to the comma-separated list in the values collected in Phase 4. This is the safest choice for kubeadm.
 
-Gate: do not apply the Platform Package until **either** the label matches the variant's expected value on at least one node, **or** `MASTER_NODES` is set explicitly in the collected values. Skip this gate on `isp-hosted`.
+Gate: do not apply the Platform Package until **either** the label matches the variant's expected value on at least one node, **or** `MASTER_NODES` is set explicitly in the collected values. Skip this gate on `isp-hosted`, `isp-hosted-slim`, `isp-slim` and `isp-slim-generic`.
 
 ### CNI conflict (cluster-wide)
 

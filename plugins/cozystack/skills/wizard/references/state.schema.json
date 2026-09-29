@@ -126,7 +126,7 @@
           "items": { "enum": ["system", "paas", "iaas", "naas"] }
         },
         "installer_variant": { "enum": ["generic", "talos", "hosted"] },
-        "platform_variant": { "enum": ["default", "isp-full", "isp-full-generic", "isp-hosted"] },
+        "platform_variant": { "enum": ["default", "isp-full", "isp-full-generic", "isp-hosted", "isp-slim", "isp-slim-generic", "isp-hosted-slim"] },
         "storage_pref": {
           "type": "object",
           "properties": {
@@ -185,7 +185,7 @@
       "properties": {
         "installer_variant": { "enum": ["generic", "talos", "hosted"] },
         "installer_version": { "type": "string", "description": "Canonical git-tag form, e.g. v1.3.3. cluster-install strips the v before passing to OCI helm --version." },
-        "platform_variant": { "enum": ["default", "isp-full", "isp-full-generic", "isp-hosted"] },
+        "platform_variant": { "enum": ["default", "isp-full", "isp-full-generic", "isp-hosted", "isp-slim", "isp-slim-generic", "isp-hosted-slim"] },
         "bundles": { "type": "array", "items": { "type": "string" } },
         "api_server_host": { "type": "string" },
         "api_server_port": { "type": "string" },
