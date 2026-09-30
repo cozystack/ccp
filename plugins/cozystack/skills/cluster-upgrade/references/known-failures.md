@@ -253,6 +253,49 @@ Restore from backup. There is no clean in-cluster recovery for a deleted `cozy-s
 3. Re-apply the Platform Package from rescue.yaml (manual review required; CRD schemas may have moved).
 4. Expect tenant disruption; communicate to users.
 
+## 8. LINSTOR controller crash-loops after an interrupted resource deletion
+
+### Symptom
+
+`linstor-controller` in `CrashLoopBackOff` (often after a node reboot or a controller restart during a node upgrade), with this on startup:
+
+```text
+Database entry of table LAYER_DRBD_VOLUMES could not be restored
+```
+
+The detailed error report is written inside the controller container and is lost on every restart, so `linstor error-reports list` cannot show it.
+
+### Root cause
+
+With the Kubernetes CRD database backend (the Cozystack default), LINSTOR stores each table row as a separate `*.internal.linstor.linbit.com` custom resource, and a multi-row change is not transactional. A resource deletion interrupted halfway (controller killed, node rebooted) can remove the `resources` row while leaving its layer rows behind. On the next start the controller cannot attach those layer rows to a resource and refuses to load the database.
+
+### Recovery
+
+```bash
+# 1. Back up every LINSTOR internal CR before touching anything
+for crd in $(kubectl --context $CTX get crd --output name | grep internal.linstor.linbit.com); do
+  kubectl --context $CTX get "${crd#*/}" --output yaml > "backup-${crd#*/}.yaml"
+done
+
+# 2. Find orphaned layer resources: rows in layerresourceids whose
+#    (node_name, resource_name, snapshot_name) has no matching row in resources
+kubectl --context $CTX get resources.internal.linstor.linbit.com --output json \
+  | jq -r '.items[].spec | "\(.node_name)/\(.resource_name)"' | sort -u > resources.txt
+kubectl --context $CTX get layerresourceids.internal.linstor.linbit.com --output json \
+  | jq -r '.items[] | select((.spec.snapshot_name // "") == "") | "\(.spec.node_name)/\(.spec.resource_name) \(.spec.layer_resource_id) \(.metadata.name)"' \
+  | awk 'NR==FNR { have[$1]=1; next } !($1 in have)' resources.txt -
+# Rows with a non-empty snapshot_name belong to snapshots; check those against snapshots.internal.linstor.linbit.com instead.
+
+# 3. For each orphaned layer_resource_id, collect the rows that reference it in
+#    layerdrbdresources, layerdrbdvolumes and layerstoragevolumes (field layer_resource_id)
+
+# 4. Delete exactly those CRs (orphaned layerresourceids + the collected layer rows), then restart the controller
+kubectl --context $CTX delete <kind>.internal.linstor.linbit.com <name>
+kubectl --context $CTX rollout restart --namespace cozy-linstor deployment/linstor-controller
+```
+
+Field names in the CR `spec` are the lower-cased database column names; confirm them on one object (`kubectl --context $CTX get layerresourceids.internal.linstor.linbit.com --output yaml | head -40`) before scripting. Every deletion is a stop gate: show the list and wait for approval. After the controller starts, run `linstor resource list --faulty` and let `linstor:recover` handle the replicas of the affected resource.
+
 ## Diagnostic quick reference
 
 | Question | Command |
