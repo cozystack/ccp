@@ -78,7 +78,8 @@ $EDITOR nodes/w1.yaml
 Things to verify (the `cozystack` preset sets sensible defaults, but verify anyway):
 
 - `machine.install.image` points at `ghcr.io/cozystack/cozystack/talos:<TAG>`.
-- `machine.kernel.modules` lists drbd / zfs / spl / openvswitch / vfio_pci / vfio_iommu_type1.
+- `machine.kernel.modules` lists drbd / drbd_transport_tcp / zfs / spl / openvswitch / vfio_pci / vfio_iommu_type1. `drbd_transport_tcp` is required on Talos 1.14+, which no longer loads extension modules on demand.
+- On bare metal, `machine.sysctls` sets `kernel.kexec_load_disabled: "1"` so later upgrades reboot through firmware instead of kexec.
 - `machine.files` contains `/etc/lvm/lvm.conf` overwrite with the cozystack global_filter.
 - For CP nodes: `machine.type: controlplane`, with optional `machine.network.interfaces[].vip` for HA.
 
