@@ -107,6 +107,8 @@ Is the resource in StandAlone?
 │
 Is the resource in Connecting?
 ├─ YES: Check error-reports. May be TCP port mismatch, bitmap error, or peer not up.
+│  └─ If dmesg shows `missed-finish` / `I shall become SyncTarget, but I am primary!`: see "Missed-finish resync loop" below
+│  └─ If `new-peer` fails with `Failure: (172) Failed to create transport`: `drbd_transport_tcp` is not loaded (Known Upstream Bugs #7)
 │
 Is the resource Inconsistent or Outdated?
 ├─ YES: If it has a Connected UpToDate peer, resync should happen automatically.
@@ -260,6 +262,30 @@ drbdadm down <resource>
 drbdadm up <resource>
 ```
 
+## Fix: Missed-finish resync loop (node rebooted mid-resync)
+
+A node rebooted in the middle of a resync; after it returns the pair loops in `Connecting` and never resyncs. dmesg on the two sides:
+
+```text
+# Outdated (rebooted) side
+uuid_compare()=source-use-bitmap by rule=sync-source-missed-finish
+# UpToDate Primary side
+... by rule=sync-target-peer-missed-finish
+I shall become SyncTarget, but I am primary!
+```
+
+Both sides think the other one must be the target. The Outdated replica has no quorum, so the HA controller taints its node `drbd.linbit.com/lost-quorum` (NoSchedule), which also blocks pods with local PVs pinned to that node (for example tenant etcd members). Rebooting another node in this state can take quorum away from the resource entirely.
+
+`drbdadm invalidate` hangs waiting for a connection, and `connect --discard-my-data` can still run into two-phase-commit timeouts on DRBD 9.3.2. What works, on the **Outdated** node only (the replica there must be Secondary and unused), after confirming the Primary side is UpToDate (principle 4):
+
+```bash
+# For each peer of the resource on the stale node:
+drbdsetup disconnect <resource> <peer-node-id> --force
+drbdsetup down <resource>
+```
+
+Then let LINSTOR recreate the replica on its next adjust and watch `linstor r l -r <resource>`: it should come back and resync from the Primary. Ask before running this: `down` drops the local replica's participation until LINSTOR recreates it.
+
 ## Fix: Suspended I/O (quorum lost)
 
 ```bash
@@ -364,3 +390,5 @@ Prioritize by presence of UpToDate replicas: resources with zero UpToDate copies
 3. **Toggle-disk doesn't preserve TCP ports** — `removeLayerData` frees ports, `ensureStackDataExists` allocates different ones. Fix: PR #476.
 4. **CSI can delete ResourceDefinition while PVC is Bound** — if all resources have FlagDelete, CSI removes RD. Fix: linstor-csi PR #429.
 5. **TCP sysctl defaults under DRBD churn** — Linux kernel's default `tcp_orphan_retries` produces excessive orphan-socket retries under DRBD load. On most distributions the sysctl reads `0`, which the kernel internally substitutes with `8`; some distros (Ubuntu, Debian) also expose it as `8` directly. Talos inherits this default unchanged. Fix: set `tcp_orphan_retries=3`, `tcp_fin_timeout=30`, `netdev_max_backlog=5000`.
+6. **DRBD 9.3.2 sender soft-lockup** — after a peer reboots, the sender thread loops on `dtt_send_page ... sent=-32` and pins a CPU; RCU stalls (`rcu_preempt detected stalls`) push runc, mounts and `drbdsetup` into D state, two-phase commits time out (`rv = -21` / `-23`), `drbdsetup down` hangs. Fixed in DRBD 9.3.4 ("Fix soft lockups: the sender thread pinning a CPU while its connection is down"). On Talos, 9.3.2 ships with 1.13.1–1.13.6 and 9.3.4 first ships with 1.14.2.
+7. **Talos 1.14 does not autoload `drbd_transport_tcp`** — the kernel has an empty modprobe path, so `drbdsetup new-peer` fails with `Failure: (172) Failed to create transport (drbd_transport_xxx module missing?)` and every resource on the node stays Connecting. Fix: list `drbd_transport_tcp` in `machine.kernel.modules` (applies without reboot). siderolabs/talos#14501.
