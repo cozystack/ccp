@@ -24,7 +24,7 @@ Work in reasoning mode. Use the phrasing `cozystack:talos-bootstrap`. Announce p
     3. `~/git/github.com/cozystack/cozystack/packages/core/talos/images/talos/profiles/installer.yaml` default.
     4. URL fallback `https://raw.githubusercontent.com/cozystack/cozystack/<release>/packages/core/talos/images/talos/profiles/installer.yaml` when no local clone is present (`<release>` is the cozystack tag from `state.cozystack.installer_version` or the latest from `git ls-remote --tags https://github.com/cozystack/cozystack` if not set).
   - System extensions: drbd, zfs, openvswitch, plus firmware (amd-ucode / intel-ucode / intel-ice / etc.).
-  - Kernel modules in machine-config: drbd, zfs, spl, openvswitch, vfio_pci, vfio_iommu_type1.
+  - Kernel modules in machine-config: drbd, drbd_transport_tcp, zfs, spl, openvswitch, vfio_pci, vfio_iommu_type1. `drbd_transport_tcp` is mandatory from Talos 1.14: the kernel no longer loads extension modules on demand (see Phase 7).
   - LVM filter in `/etc/lvm/lvm.conf`: `global_filter = [ "r|^/dev/drbd.*|", "r|^/dev/dm-.*|", "r|^/dev/zd.*|" ]`.
   - talm preset: `cozystack` chart from `~/git/github.com/cozystack/talm/charts/cozystack`.
 - Verify before declaring success. A green Apply is not enough — `kubectl get nodes Ready`, talos extensions present, LVM filter present.
@@ -402,7 +402,8 @@ If `state.cluster.vip.per_node[$node]` exists but the LinkConfig doc is missing,
 Present each `nodes/<name>.yaml` for review. Things to spot before apply:
 
 - `machine.install.image` should be `ghcr.io/cozystack/cozystack/talos:<tag>`. The cozystack preset sets this; surface if missing.
-- `machine.kernel.modules` should list drbd / zfs / spl / openvswitch / vfio_pci / vfio_iommu_type1.
+- `machine.kernel.modules` should list drbd / drbd_transport_tcp / zfs / spl / openvswitch / vfio_pci / vfio_iommu_type1. Talos 1.14 builds the kernel with an empty modprobe path ([siderolabs/talos#14501](https://github.com/siderolabs/talos/issues/14501)), so DRBD can no longer autoload `drbd_transport_tcp` on the first peer connection and every `drbdsetup new-peer` fails with `Failure: (172) Failed to create transport (drbd_transport_xxx module missing?)`. If the preset does not list it yet ([cozystack/talm#252](https://github.com/cozystack/talm/pull/252)), add `- name: drbd_transport_tcp` after the `drbd` entry. The same applies to any other module the operator expects the kernel to load on demand.
+- Bare metal: add `kernel.kexec_load_disabled: "1"` to `machine.sysctls`. A kexec reboot during a later `talosctl upgrade` can hang bare-metal nodes; with kexec disabled Talos reboots through firmware.
 - For CP nodes: `machine.type: controlplane`, optional `machine.network.interfaces[].vip` for HA.
 - `machine.install.disk` defaults to a heuristic — confirm it picks the right system disk on multi-disk nodes (operator can edit nodes/<name>.yaml before apply).
 
@@ -513,6 +514,8 @@ talosctl --talosconfig "$TALOSCONFIG" --nodes "$NODES" \
   version --short \
   | grep -E '^Tag:' | sort -u
 ```
+
+On Talos 1.14+ also expect `drbd_transport_tcp` in `/proc/modules`; if it is missing, fix `machine.kernel.modules` (Phase 7) and re-apply, no reboot needed.
 
 If any check fails, the skill **does not silently mark `failed_at`** — it tries to reconcile via Phase 11.5 auto-upgrade first (the most common cause of missing extensions is operator-booted-from-base-Talos-image instead of cozystack-tuned). Only after Phase 11.5 fails does the skill write `status.talos-bootstrap.failed_at`. `cluster-install` will refuse a Talos cluster missing extensions.
 
