@@ -82,7 +82,7 @@ kind: Package
 metadata:
   name: cozystack.cozystack-platform
 spec:
-  variant: isp-full-generic        # or isp-full / isp-hosted / default
+  variant: isp-full-generic        # or isp-full / isp-hosted / isp-slim / isp-slim-generic / isp-hosted-slim / default
   components:
     platform:
       values:
@@ -90,11 +90,12 @@ spec:
           system:
             enabled: true
           iaas:
-            enabled: true
+            enabled: true               # false on isp-hosted* and isp-slim*: the iaas bundle refuses to render there
           paas:
             enabled: true
           naas:
             enabled: true
+          enabledPackages: []           # slim variants: full Package names to opt in, with their dependsOn chains
         authentication:
           oidc:
             enabled: false              # OIDC OFF at install (installer >=1.5.0).
@@ -110,7 +111,7 @@ spec:
           serviceCIDR: "10.96.0.0/16"   # cozystack default
           joinCIDR: "100.64.0.0/16"     # cozystack default
           kubeovn:
-            MASTER_NODES: ""            # comma-separated CP IPs; leave empty to let Helm lookup find them
+            MASTER_NODES: ""            # comma-separated CP IPs; leave empty to let Helm lookup find them. On isp-slim* the CIDR and kubeovn values are ignored (clusterDomain still applies, stageCniPlugins only when cozystack.multus is opted in; encryption.enabled is refused)
         publishing:
           host: "example.com"
           apiServerEndpoint: "https://api.example.com:6443"
@@ -233,5 +234,8 @@ This is what creates the `IngressClass` and brings up `ingress-nginx`.
 - `~/git/github.com/cozystack/cozystack/packages/core/platform/values-isp-full.yaml`
 - `~/git/github.com/cozystack/cozystack/packages/core/platform/values-isp-full-generic.yaml`
 - `~/git/github.com/cozystack/cozystack/packages/core/platform/values-isp-hosted.yaml`
+- `~/git/github.com/cozystack/cozystack/packages/core/platform/values-isp-slim.yaml`
+- `~/git/github.com/cozystack/cozystack/packages/core/platform/values-isp-slim-generic.yaml`
+- `~/git/github.com/cozystack/cozystack/packages/core/platform/values-isp-hosted-slim.yaml`
 
 These describe **only** the bundle deltas. Use the merged values from `packages/core/platform/values.yaml` plus the variant overlay as the baseline for what the user is editing in Phase 4.

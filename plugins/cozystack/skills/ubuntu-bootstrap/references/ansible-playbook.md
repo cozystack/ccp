@@ -37,11 +37,11 @@ curl -sfL https://get.k3s.io | \
 Flag rationale:
 
 - `--cluster-init` — initialise embedded etcd raft on this node; required for HA. Single-node sandbox still works with this flag.
-- `--flannel-backend=none` — disables k3s's built-in CNI. Cozystack ships Cilium + Kube-OVN.
+- `--flannel-backend=none` — disables k3s's built-in CNI. Cozystack ships Cilium + Kube-OVN (Cilium alone on slim).
 - `--disable=traefik` — Cozystack ships its own ingress (ingress-nginx).
-- `--disable=servicelb` — Cozystack ships MetalLB inside the platform Package.
+- `--disable=servicelb` — Cozystack ships MetalLB inside the platform Package (on `isp-slim-generic` Cilium L2 announcements take its place).
 - `--disable=local-storage` — Cozystack ships LINSTOR + piraeus-operator.
-- `--disable=metrics-server` — VictoriaMetrics stack covers metrics.
+- `--disable=metrics-server` — Cozystack ships its own metrics-server (opt-in `cozystack.metrics-server` on `isp-slim-generic`).
 - `--disable-network-policy` — Cilium implements policies.
 - `--disable-kube-proxy` — Cilium replaces kube-proxy.
 - `--cluster-domain=cozy.local` — mandatory for Cozystack. Cluster-install Phase 2 refuses if this isn't set.

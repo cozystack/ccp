@@ -1,7 +1,7 @@
 ---
 name: cluster-install
 description: Use when installing Cozystack on an existing Kubernetes cluster (kubeadm / k3s / RKE2 / managed). Discovers cluster facts, validates node readiness via kubectl debug, recommends an installer + platform variant, gathers values interactively, creates the ZFS pool on each storage node through kubectl debug (cozystack standardises on ZFS for LINSTOR — LVM / LVM-thin paths are not supported), installs extractedprism (per-node kube-apiserver HA proxy, generic variant default), installs the cozy-installer chart, applies the Platform Package (on current releases OIDC is enabled after convergence, not at install), patches the root Tenant host + ingress, waits until every HelmRelease is Ready, prints a NOTES-style access summary, and offers an issue-template handoff to cozystack/* on fatal failure. Not for Kubernetes bootstrap and not for upgrades — see `cozystack:cluster-upgrade` for that. Talos node-prep is out of scope — `cozystack:cluster-install` refuses if Talos nodes are missing cozystack-tuned extensions and points at `cozystack:talos-bootstrap`.
-argument-hint: "[--config-dir=<path>] [--context=<kube-context>] [--installer-version=<vX.Y.Z>] [--installer-variant=<talos|generic|hosted>] [--platform-variant=<isp-full|isp-full-generic|isp-hosted|default>] [--no-extractedprism] [--api-host=<ip>] [--dry-run]"
+argument-hint: "[--config-dir=<path>] [--context=<kube-context>] [--installer-version=<vX.Y.Z>] [--installer-variant=<talos|generic|hosted>] [--platform-variant=<isp-full|isp-full-generic|isp-hosted|isp-slim|isp-slim-generic|isp-hosted-slim|default>] [--no-extractedprism] [--api-host=<ip>] [--dry-run]"
 ---
 
 # cozystack:cluster-install
@@ -75,7 +75,7 @@ Collect:
 - Existing storage classes and the default.
 - Existing LoadBalancer-class services.
 - Control-plane node labels: `node-role.kubernetes.io/control-plane` key **and value** per node (see `references/node-checks.md`).
-- **Storage discovery** (per node, via `kubectl debug node` in read-only mode — `lsblk`, `pvs`, `vgs`, `lvs --all`, `zpool list`, `command -v pvcreate vgcreate lvcreate lvs`; on Talos additionally `lsmod` for `drbd`/`zfs`/`openvswitch` and `/etc/lvm/lvm.conf` global_filter). Records: unmounted devices ≥ 50 GiB, existing VGs / LVs / zpools (will be reused as Phase 4 defaults), LVM-tools availability, Talos extension readiness. Skip on `isp-hosted`.
+- **Storage discovery** (per node, via `kubectl debug node` in read-only mode — `lsblk`, `pvs`, `vgs`, `lvs --all`, `zpool list`, `command -v pvcreate vgcreate lvcreate lvs`; on Talos additionally `lsmod` for `drbd`/`zfs`/`openvswitch` and `/etc/lvm/lvm.conf` global_filter). Records: unmounted devices ≥ 50 GiB, existing VGs / LVs / zpools (will be reused as Phase 4 defaults), LVM-tools availability, Talos extension readiness. Skip on `isp-hosted` and `isp-hosted-slim`.
 
 Apply variant recommendation logic from `references/variants.md`. Print:
 
@@ -106,17 +106,18 @@ recommended:
 Hard refusals (don't move on, surface clearly):
 
 - Cluster domain is not `cozy.local` → refuse, link to bootstrap docs for the user's distribution.
+- Selected variant (recommended, overridden or passed with `--platform-variant`) is `isp-slim` / `isp-slim-generic` and any node has an empty `spec.podCIDR` (`kubectl --context $CTX get nodes --output jsonpath='{range .items[*]}{.metadata.name}={.spec.podCIDR}{"\n"}{end}'`) → refuse: Cilium takes pod ranges from that field there. Fix with `--pod-network-cidr` on kubeadm or `--allocate-node-cidrs` plus `--cluster-cidr` on kube-controller-manager, or pick the full variant.
 - CNI conflict (non-hosted) → refuse, list pods to remove.
 - Conflicting workloads (ingress-nginx, cert-manager, etc., non-hosted) → refuse, list workloads.
 - kubectl can't reach the cluster → refuse, suggest `kubectl auth can-i '*' '*' --all-namespaces`.
 
 ## Phase 3 — Node readiness validation
 
-Skip on `isp-hosted` (no node access required).
+Skip on `isp-hosted` and `isp-hosted-slim` (no node access required).
 
 For every other case, drive `kubectl debug node` per `references/node-checks.md`. For homogeneous clusters, check one sample CP node and one sample worker; warn that the rest are assumed identical. For heterogeneous, check every node.
 
-**Talos-specific early-exit.** If Phase 2 detected Talos on any node, run the four Talos checks from `references/node-checks.md` (lsmod drbd / lsmod zfs / lsmod openvswitch / `/etc/lvm/lvm.conf` cozystack global_filter). If any of them fail on any Talos node, **STOP GATE 1 fails immediately** with this message:
+**Talos-specific early-exit.** If Phase 2 detected Talos on any node, run the four Talos checks from `references/node-checks.md` (lsmod drbd / lsmod zfs / lsmod openvswitch / `/etc/lvm/lvm.conf` cozystack global_filter). On `isp-slim` drop the openvswitch check: there is no Kube-OVN. If any of them fail on any Talos node, **STOP GATE 1 fails immediately** with this message:
 
 ```text
 Talos nodes detected without cozystack-tuned extensions.
@@ -224,12 +225,14 @@ options:
 Slot legend (every slot the operator may want to edit):
 
 1. **Bundles** (multiSelect, defaults from variant overlay):
-   - system (required for `isp-full*`; off for `isp-hosted`)
+   - system (on for every `isp-*` variant except `isp-hosted` up to v1.6.x; `isp-hosted*` render it with a noop networking Package)
    - paas (databases / applications)
-   - iaas (Cluster API + VMs)
+   - iaas (Cluster API + VMs; refused on `isp-hosted*` and `isp-slim*` — do not offer it there)
    - naas (Network as a Service)
 
-2. **Storage** (only when `system` bundle is on — `isp-hosted` skips). Cozystack standardises on **ZFS** for LINSTOR pools; see `references/storage-backends.md`. No backend question — only device selection and pool layout per node.
+   On a slim variant, also collect **enabledPackages**: the packages to opt in, as full Package names (`cozystack.postgres-operator`, `cozystack.postgres-application`, …), each with its whole `dependsOn` chain (see `references/variants.md`). Default empty. Rendered into `bundles.enabledPackages` in the Platform Package.
+
+2. **Storage** (only when `system` bundle is on — `isp-hosted` and `isp-hosted-slim` skip). Cozystack standardises on **ZFS** for LINSTOR pools; see `references/storage-backends.md`. No backend question — only device selection and pool layout per node.
 
    a. **Per-node disk selection** — for every storage-providing node, show Phase 2's unmounted-device list and ask which device(s) to use. Default is the largest unmounted disk ≥ 50 GiB. If a node has multiple candidates or the operator wants a mirror / RAID-Z, prompt for a vdev layout:
 
@@ -255,8 +258,8 @@ Slot legend (every slot the operator may want to edit):
 
    Refuse to proceed if any storage node lacks ZFS tooling (`zpool` / `zfs` binaries) — the Phase 3 storage discovery would have caught it, but re-verify here in case a fix was applied since. RHEL 10 family is not supported on the storage path; see `references/known-failures.md`.
 
-3. **podCIDR / serviceCIDR / joinCIDR** — show detected as defaults. If user picks Other, validate format (CIDR notation, no overlap with host networks the cluster sees, joinCIDR ≠ podCIDR ≠ serviceCIDR).
-4. **podGateway** — auto-derive as the first IP of podCIDR, confirm.
+3. **podCIDR / serviceCIDR / joinCIDR** — skip on `isp-slim` / `isp-slim-generic` (Kube-OVN only; Cilium takes pod CIDRs from `node.spec.podCIDR`). Otherwise show detected as defaults. If user picks Other, validate format (CIDR notation, no overlap with host networks the cluster sees, joinCIDR ≠ podCIDR ≠ serviceCIDR).
+4. **podGateway** — skip on `isp-slim*`. Otherwise auto-derive as the first IP of podCIDR, confirm.
 5. **apiServerHost** — the address Cilium / KubeOVN / cozystack-operator dial to reach kube-apiserver. The skill picks this automatically by installer variant — **do not ask the operator** unless they passed `--api-host=<ip>`.
 
    - **`talos` variant** — `localhost:7445` (KubePrism, built into Talos machine-config). Operator can't override; Cozystack's `values-isp-full.yaml` overlay hard-codes this for Cilium.
@@ -266,7 +269,7 @@ Slot legend (every slot the operator may want to edit):
 
    The plan presentation in Phase 5 always shows which choice landed and how to flip it.
 6. **LB / external IPs** —
-   - Mode: `externalIPs` (recommended for now; deprecated upstream in k8s v1.36) vs `loadBalancer` (Cilium L2/BGP or external cloud LB; needs more wiring).
+   - Mode: `externalIPs` (recommended for now; deprecated upstream in k8s v1.36) vs `loadBalancer` (Cilium L2/BGP or external cloud LB; needs more wiring). On `isp-slim*` MetalLB is off unless `cozystack.metallb` is opted in: `loadBalancer` mode needs an admin-created `CiliumLoadBalancerIPPool` + `CiliumL2AnnouncementPolicy` (the platform enables Cilium L2 announcements on slim).
    - Pool: resolved from `state.cozystack_intake.external_ips` (wizard Phase 4). The wizard already asked the operator's strategy — `internal` / `external` / `explicit` — and the reason. Here the skill **validates the strategy against live `Node.status.addresses`** and refuses to silently override:
 
      ```bash
@@ -355,7 +358,7 @@ Slot legend (every slot the operator may want to edit):
 
 10. **exposedServices** (multiSelect): `api`, `dashboard`, `vm-exportproxy`, `cdi-uploadproxy`. Default `api,dashboard`.
 
-11. **KubeOVN `MASTER_NODES`** — branch on Phase 2 finding:
+11. **KubeOVN `MASTER_NODES`** — skip on `isp-slim*` and `isp-hosted*` (no Kube-OVN). Otherwise branch on Phase 2 finding:
     - If CP label value matches variant expectation on at least one node → default empty (let lookup work).
     - Otherwise → pre-fill comma-separated INTERNAL-IPs of CP nodes from Phase 2 and explain why the lookup would fail.
 
@@ -750,7 +753,7 @@ kubectl --context $CTX get hr --all-namespaces \
   --output jsonpath='{range .items[?(@.status.conditions[?(@.type=="Ready" && @.status!="True")])]}{.metadata.namespace}/{.metadata.name} {end}'
 ```
 
-On the full `system`-bundle path you may also want the root tenant's `etcd`/`monitoring`/`seaweedfs` services (this is what cozystack's own `hack/e2e-install-cozystack.bats` patches): extend the patch to `{"spec":{"ingress":true,"host":"${HOST}","monitoring":true,"etcd":true,"seaweedfs":true}}` when those were selected in Phase 4. Leave them at their defaults otherwise.
+On the full `system`-bundle path you may also want the root tenant's `etcd`/`monitoring`/`seaweedfs` services (this is what cozystack's own `hack/e2e-install-cozystack.bats` patches): extend the patch to `{"spec":{"ingress":true,"host":"${HOST}","monitoring":true,"etcd":true,"seaweedfs":true}}` when those were selected in Phase 4. Leave them at their defaults otherwise. On `isp-slim*` / `isp-hosted-slim` turn on only the switches whose application chain is in `enabledPackages` (`cozystack.etcd-application`, `cozystack.monitoring-application`, `cozystack.seaweedfs-application` and their dependencies); otherwise the Tenant's release never becomes Ready.
 
 ```text
 HelmRelease $NS/$NAME has been Failing for $T minutes.

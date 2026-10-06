@@ -16,7 +16,7 @@ Source of truth: `https://cozystack.io/docs/v1.3/install/kubernetes/generic/` an
 
 - **Cluster domain**: `cozy.local`. The Package chart enforces this in `networking.clusterDomain` and components assume it. If kube-apiserver was bootstrapped with `cluster.local` (or anything else), `cozystack:cluster-install` must refuse — re-bootstrap of the cluster is the only fix.
 - **podCIDR / serviceCIDR**: must match what kube-apiserver and kubelet were started with. Mismatched values silently break service routing.
-- **CNI**: none installed. Cozystack ships Cilium + Kube-OVN. If any other CNI pod (Calico, Flannel, Weave, AWS VPC CNI) is running in `kube-system`, refuse with explanation. Exception: managed/hosted variant — provider CNI stays.
+- **CNI**: none installed. Cozystack ships Cilium + Kube-OVN (Cilium alone on slim). If any other CNI pod (Calico, Flannel, Weave, AWS VPC CNI) is running in `kube-system`, refuse with explanation. Exception: managed/hosted variant — provider CNI stays.
 - **kube-proxy**: disabled. Cilium replaces it. If kube-proxy DaemonSet exists, the install will conflict.
 - **Ingress controller**: none installed. Cozystack ships ingress-nginx (`cozy-ingress-nginx`).
 - **cert-manager**: none installed. Cozystack ships its own (`cozy-cert-manager`).
@@ -50,7 +50,7 @@ Source of truth: `https://cozystack.io/docs/v1.3/install/kubernetes/generic/` an
 - All nodes in the same L2 segment (or KubeSpan with RTT < 10 ms).
 - LB IP range or external IPs reserved and routable.
 - DNS: either real FQDN under operator's control, or `<LB-IP-with-dashes>.nip.io` for sandbox.
-- L2 anti-spoofing disabled on the upstream switch if MetalLB L2 mode is used.
+- L2 anti-spoofing disabled on the upstream switch if MetalLB L2 mode (or Cilium L2 announcements on the slim variants) is used.
 
 ## Installer variant ↔ platform variant mapping
 
@@ -61,11 +61,14 @@ The cozy-installer Helm chart has its own variant (`cozystackOperator.variant`) 
 | `talos` | `isp-full` (or `distro-full`) | Talos Linux nodes — full IaaS + PaaS. |
 | `generic` | `isp-full-generic` | kubeadm / k3s / RKE2 — full IaaS + PaaS on generic Linux. Requires `cozystack.apiServerHost` (internal IP of CP node). |
 | `hosted` | `isp-hosted` | Managed k8s — PaaS only (no VMs, no LINSTOR). |
+| `talos` | `isp-slim` | Talos Linux nodes — base platform only, Cilium without Kube-OVN; everything else opt-in. |
+| `generic` | `isp-slim-generic` | kubeadm / k3s / RKE2 — base platform only, Cilium without Kube-OVN; everything else opt-in. |
+| `hosted` | `isp-hosted-slim` | Managed k8s — Cozystack control plane only; everything else opt-in. |
 | any | `default` | Bare minimum — controller only, no bundles. Power-user / development. |
 
 ## Where this is enforced
 
 - Chart values defaults: `~/git/github.com/cozystack/cozystack/packages/core/installer/values.yaml`.
 - Platform defaults: `~/git/github.com/cozystack/cozystack/packages/core/platform/values.yaml`.
-- Variant overlays: `packages/core/platform/values-isp-full*.yaml`, `values-isp-hosted.yaml`.
+- Variant overlays: `packages/core/platform/values-isp-full*.yaml`, `values-isp-hosted.yaml`, `values-isp-slim*.yaml`, `values-isp-hosted-slim.yaml`.
 - Ansible reference: `~/git/github.com/cozystack/ansible-cozystack/roles/cozystack/{defaults,tasks}/main.yml` — read this when in doubt about a value's required form.
