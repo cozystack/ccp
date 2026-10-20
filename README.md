@@ -22,7 +22,7 @@ Install a plugin:
 
 ### cozystack
 
-Platform skills bundle. One install gives you thirteen skills, invoked as `/cozystack:<name>`. Start with `/cozystack:wizard` — it asks Talos / Ubuntu / Existing and picks the chain.
+Platform skills bundle. One install gives you fourteen skills, invoked as `/cozystack:<name>`. Start with `/cozystack:wizard` — it asks Talos / Ubuntu / Existing and picks the chain.
 
 | Skill | Description |
 | --- | --- |
@@ -39,6 +39,7 @@ Platform skills bundle. One install gives you thirteen skills, invoked as `/cozy
 | **/cozystack:dev-ui-bootstrap** | Bootstrap a UI dev sandbox — Playwright + Vite dev server for `cozystack-ui` pointed at a chosen kubeconfig. Creates a feature worktree, installs `@playwright/test` and Chromium, writes `playwright.config.ts`, adds `dev:e2e` / `test:e2e` scripts, and brings up `kubectl proxy` + Vite on a free port. Use when fixing, debugging, or writing tests against the Cozystack console. |
 | **/cozystack:comment-audit** | Audit a change's code comments for design-doc prose — product rationale, before/after narrative, incident retelling, editorializing — and report which comments to cut, which earn their place, and which arguments are restated at several sites. Reports only; modifies nothing. Repository-agnostic: works on any codebase, not just Cozystack ones. |
 | **/cozystack:comment-trim** | Apply a comment audit — delete the prose, keep every comment that documents a real mechanism, replace sync-with-the-design-doc comments with a pointer, then prove with the bundled `comments-only.py` that no code moved. Leaves the edits in the working tree; does not commit or push. Repository-agnostic. |
+| **/cozystack:vm-tenant-move** | Move a VM (VMInstance plus its VMDisks) to another tenant namespace without copying disk data. Prepares and pauses the VMDisks in the target, re-binds each PersistentVolume to a new PVC there, lets CDI adopt it through the `cdi.kubevirt.io/storage.populatedFor` annotation, and keeps the kube-ovn IP and MAC. Every mutation is confirmed per step; rollback is the same procedure in reverse. |
 
 Chains the wizard builds:
 
@@ -73,7 +74,7 @@ Operators can opt out with `--no-extractedprism` and supply their own `--api-hos
 
 ```text
 plugins/
-  cozystack/                          # platform bundle (13 skills)
+  cozystack/                          # platform bundle (14 skills)
     .claude-plugin/plugin.json
     skills/
       wizard/                         # entry point: interview + chain dispatcher
@@ -89,6 +90,7 @@ plugins/
       dev-ui-bootstrap/               # bootstrap Playwright + Vite sandbox for cozystack-ui
       comment-audit/                  # report design-doc prose in code comments
       comment-trim/                   # apply the cuts + prove comments-only
+      vm-tenant-move/                 # move a VM to another tenant without copying disks
   linstor/                            # storage bundle (1 skill)
     .claude-plugin/plugin.json
     skills/
